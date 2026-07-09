@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from pydantic import BaseModel
 from io import BytesIO
 from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
@@ -13,9 +13,14 @@ HEADERS = {
     "Телефоны для СМС и рассылки": "sms_phones", "Руководитель": "director", "Контактное лицо": "contact_person", "Фирма": "company",
 }
 
-@dataclass
-class ImportSummary:
-    files: int = 0; rows: int = 0; added: int = 0; updated: int = 0; skipped: int = 0; errors: int = 0; duplicates: int = 0
+class ImportSummary(BaseModel):
+    files: int = 0
+    rows: int = 0
+    added: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: int = 0
+    duplicates: int = 0
 
 
 def _read_rows(filename: str, content: bytes) -> list[dict[str, object]]:

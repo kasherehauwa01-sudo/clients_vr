@@ -1,61 +1,156 @@
 from io import BytesIO
-import xlsxwriter
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
+import xlsxwriter
 from app.db.session import get_db
 from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Phone, TradePlace
 from app.schemas.client import BulkUpdate, ClientDetail, ClientListItem, PagedClients
 from app.services.importer import import_files
 
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api", tags=["clients"])
 
 
-def _item(c: Client) -> ClientListItem:
-    return ClientListItem(id=c.id, name=c.name, company=c.company, manager=c.manager, phone=(c.phones[0].phone if c.phones else None), email=(c.emails[0].email if c.emails else None), trade_place=(c.trade_places[0].place if c.trade_places else None), birth_date=c.birth_date, last_import_at=getattr(c, "last_import_at", None), status=c.status.value)
+def to_list_item(client: Client, last_import_at=None) -> ClientListItem:
+    return ClientListItem(
+        id=client.id,
+        name=client.name,
+        company=client.company,
+        manager=client.manager,
+        phone=client.phones[0].phone if client.phones else None,
+        email=client.emails[0].email if client.emails else None,
+        trade_place=client.trade_places[0].place if client.trade_places else None,
+        birth_date=client.birth_date,
+        last_import_at=last_import_at,
+        status=client.status.value,
+    )
+
+
+def apply_client_filters(query, *, search=None, manager=None, company=None, price_type=None, trade_place=None, has_email=None, has_phone=None, status=None, birth_day=None, birth_month=None):
+    if search:
+        term = f"%{search.lower()}%"
+        query = query.outerjoin(Email).outerjoin(Phone).outerjoin(TradePlace).where(
+            or_(
+                func.lower(Client.name).like(term),
+                func.lower(Client.company).like(term),
+                func.lower(Client.contact_person).like(term),
+                func.lower(Client.director).like(term),
+                func.lower(Email.email).like(term),
+                Phone.phone.like(term),
+                func.lower(TradePlace.place).like(term),
+            )
+        )
+    if manager:
+        query = query.where(Client.manager == manager)
+    if company:
+        query = query.where(Client.company == company)
+    if price_type:
+        query = query.where(Client.price_type == price_type)
+    if trade_place:
+        query = query.where(Client.trade_places.any(TradePlace.place == trade_place))
+    if has_email is not None:
+        query = query.where(Client.emails.any() if has_email else ~Client.emails.any())
+    if has_phone is not None:
+        query = query.where(Client.phones.any() if has_phone else ~Client.phones.any())
+    if status:
+        query = query.where(Client.status == status)
+    if birth_day:
+        query = query.where(func.extract("day", Client.birth_date) == birth_day)
+    if birth_month:
+        query = query.where(func.extract("month", Client.birth_date) == birth_month)
+    return query
 
 
 @router.get("/clients", response_model=PagedClients)
-def clients(db: Session = Depends(get_db), page: int = 1, page_size: int = 50, search: str | None = None, manager: str | None = None, company: str | None = None, price_type: str | None = None, trade_place: str | None = None, has_email: bool | None = None, has_phone: bool | None = None, status: str | None = None, birth_day: int | None = None, birth_month: int | None = None, sort: str = "name", order: str = "asc"):
-    q = select(Client).options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places)).outerjoin(Import, Client.last_import_id == Import.id).add_columns(Import.imported_at.label("last_import_at"))
-    filters = []
-    if search:
-        term = f"%{search.lower()}%"; q = q.outerjoin(Email).outerjoin(Phone).outerjoin(TradePlace); filters.append(or_(func.lower(Client.name).like(term), func.lower(Client.company).like(term), func.lower(Client.contact_person).like(term), func.lower(Client.director).like(term), func.lower(Email.email).like(term), Phone.phone.like(term), func.lower(TradePlace.place).like(term)))
-    if manager: filters.append(Client.manager == manager)
-    if company: filters.append(Client.company == company)
-    if price_type: filters.append(Client.price_type == price_type)
-    if status: filters.append(Client.status == status)
-    if birth_day: filters.append(func.extract("day", Client.birth_date) == birth_day)
-    if birth_month: filters.append(func.extract("month", Client.birth_date) == birth_month)
-    if has_email is True: filters.append(Client.emails.any())
-    if has_email is False: filters.append(~Client.emails.any())
-    if has_phone is True: filters.append(Client.phones.any())
-    if has_phone is False: filters.append(~Client.phones.any())
-    if trade_place: filters.append(Client.trade_places.any(TradePlace.place == trade_place))
-    base = select(func.count(func.distinct(Client.id))).select_from(Client)
-    for f in filters: q = q.where(f); base = base.where(f)
-    sort_map = {"name": Client.name, "company": Client.company, "manager": Client.manager, "birth_date": Client.birth_date, "updated_at": Client.updated_at, "last_import": Import.imported_at}
-    q = q.order_by((sort_map.get(sort) or Client.name).desc() if order == "desc" else (sort_map.get(sort) or Client.name).asc()).offset((page - 1) * page_size).limit(page_size).distinct()
-    rows = db.execute(q).all(); items = []
-    for c, imported_at in rows:
-        c.last_import_at = imported_at; items.append(_item(c))
-    return PagedClients(items=items, total=db.scalar(base) or 0, page=page, page_size=page_size)
+def clients(
+    db: Session = Depends(get_db),
+    page: int = 1,
+    page_size: int = 50,
+    search: str | None = None,
+    manager: str | None = None,
+    company: str | None = None,
+    price_type: str | None = None,
+    trade_place: str | None = None,
+    has_email: bool | None = None,
+    has_phone: bool | None = None,
+    status: str | None = None,
+    birth_day: int | None = None,
+    birth_month: int | None = None,
+    sort: str = "name",
+    order: str = "asc",
+):
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    filtered_ids = apply_client_filters(
+        select(Client.id),
+        search=search,
+        manager=manager,
+        company=company,
+        price_type=price_type,
+        trade_place=trade_place,
+        has_email=has_email,
+        has_phone=has_phone,
+        status=status,
+        birth_day=birth_day,
+        birth_month=birth_month,
+    ).distinct().subquery()
+    total = db.scalar(select(func.count()).select_from(filtered_ids)) or 0
+    sort_map = {
+        "name": Client.name,
+        "company": Client.company,
+        "manager": Client.manager,
+        "birth_date": Client.birth_date,
+        "updated_at": Client.updated_at,
+        "last_import": Import.imported_at,
+    }
+    sort_column = sort_map.get(sort, Client.name)
+    order_by = sort_column.desc().nullslast() if order == "desc" else sort_column.asc().nullslast()
+    stmt = (
+        select(Client, Import.imported_at)
+        .join(filtered_ids, filtered_ids.c.id == Client.id)
+        .outerjoin(Import, Client.last_import_id == Import.id)
+        .options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places))
+        .order_by(order_by, Client.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    items = [to_list_item(client, imported_at) for client, imported_at in db.execute(stmt).all()]
+    return PagedClients(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.get("/clients/{client_id}", response_model=ClientDetail)
 def client_detail(client_id: int, db: Session = Depends(get_db)):
-    c = db.scalar(select(Client).where(Client.id == client_id).options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places)))
-    first = db.get(Import, c.first_import_id) if c and c.first_import_id else None; last = db.get(Import, c.last_import_id) if c and c.last_import_id else None
-    item = _item(c).model_dump(); item.update(price_type=c.price_type, director=c.director, contact_person=c.contact_person, created_at=c.created_at, updated_at=c.updated_at, first_import_at=first.imported_at if first else None, last_import_file=last.file_name if last else None, phones=[{"phone": p.phone, "type": p.type.value} for p in c.phones], emails=[e.email for e in c.emails], trade_places=[p.place for p in c.trade_places])
-    return ClientDetail(**item)
+    client = db.scalar(
+        select(Client)
+        .where(Client.id == client_id)
+        .options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places))
+    )
+    if client is None:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    first_import = db.get(Import, client.first_import_id) if client.first_import_id else None
+    last_import = db.get(Import, client.last_import_id) if client.last_import_id else None
+    base = to_list_item(client, last_import.imported_at if last_import else None).model_dump()
+    base.update(
+        price_type=client.price_type,
+        director=client.director,
+        contact_person=client.contact_person,
+        created_at=client.created_at,
+        updated_at=client.updated_at,
+        first_import_at=first_import.imported_at if first_import else None,
+        last_import_file=last_import.file_name if last_import else None,
+        phones=[{"phone": phone.phone, "type": phone.type.value} for phone in client.phones],
+        emails=[email.email for email in client.emails],
+        trade_places=[place.place for place in client.trade_places],
+    )
+    return ClientDetail(**base)
 
 
 @router.post("/imports")
 async def upload_import(files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
-    payload = [(f.filename, await f.read()) for f in files]
+    payload = [(file.filename or "import.xlsx", await file.read()) for file in files]
     summary = import_files(db, payload)
-    return {"message": "Импорт завершен", **summary.__dict__}
+    return {"message": "Импорт завершен", **summary.model_dump()}
 
 
 @router.get("/imports")
@@ -65,33 +160,63 @@ def imports(db: Session = Depends(get_db)):
 
 @router.get("/imports/{import_id}/issues")
 def import_issues(import_id: int, db: Session = Depends(get_db)):
-    return db.scalars(select(ImportIssue).where(ImportIssue.import_id == import_id)).all()
+    return db.scalars(select(ImportIssue).where(ImportIssue.import_id == import_id).order_by(ImportIssue.id)).all()
 
 
 @router.post("/clients/bulk")
 def bulk_update(payload: BulkUpdate, db: Session = Depends(get_db)):
-    clients = db.scalars(select(Client).where(Client.id.in_(payload.ids))).all()
-    for c in clients:
-        if payload.manager is not None: c.manager = payload.manager
-        if payload.price_type is not None: c.price_type = payload.price_type
-        if payload.status is not None: c.status = payload.status
-        db.add(AuditLog(client_id=c.id, action="bulk_update", payload=payload.model_dump_json()))
-    db.commit(); return {"updated": len(clients)}
+    clients_to_update = db.scalars(select(Client).where(Client.id.in_(payload.ids))).all()
+    for client in clients_to_update:
+        if payload.manager is not None:
+            client.manager = payload.manager
+        if payload.price_type is not None:
+            client.price_type = payload.price_type
+        if payload.status is not None:
+            client.status = payload.status
+        db.add(AuditLog(client_id=client.id, action="bulk_update", payload=payload.model_dump_json(exclude_none=True)))
+    db.commit()
+    return {"updated": len(clients_to_update)}
 
 
 @router.delete("/clients")
 def bulk_delete(ids: str, db: Session = Depends(get_db)):
-    id_list = [int(x) for x in ids.split(",") if x]
-    count = len(db.scalars(select(Client).where(Client.id.in_(id_list))).all())
-    db.query(Client).filter(Client.id.in_(id_list)).delete(synchronize_session=False); db.commit(); return {"deleted": count}
+    id_list = [int(value) for value in ids.split(",") if value.strip()]
+    clients_to_delete = db.scalars(select(Client).where(Client.id.in_(id_list))).all()
+    for client in clients_to_delete:
+        db.delete(client)
+    db.add(AuditLog(action="bulk_delete", payload=",".join(map(str, id_list))))
+    db.commit()
+    return {"deleted": len(clients_to_delete)}
 
 
 @router.get("/clients-export.xlsx")
 def export_clients(db: Session = Depends(get_db)):
-    out = BytesIO(); wb = xlsxwriter.Workbook(out); ws = wb.add_worksheet("clients")
+    output = BytesIO()
+    workbook = xlsxwriter.Workbook(output)
+    worksheet = workbook.add_worksheet("clients")
     headers = ["Наименование", "Фирма", "Менеджер", "Телефон", "Email", "Место торговли", "Дата рождения", "Статус"]
-    for col, h in enumerate(headers): ws.write(0, col, h)
-    for row, c in enumerate(db.scalars(select(Client).options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places))).all(), 1):
-        ws.write_row(row, 0, [c.name, c.company, c.manager, c.phones[0].phone if c.phones else "", c.emails[0].email if c.emails else "", c.trade_places[0].place if c.trade_places else "", str(c.birth_date or ""), c.status.value])
-    wb.close(); out.seek(0)
-    return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition":"attachment; filename=clients.xlsx"})
+    for column, header in enumerate(headers):
+        worksheet.write(0, column, header)
+    stmt = select(Client).options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places)).order_by(Client.name)
+    for row_number, client in enumerate(db.scalars(stmt), start=1):
+        worksheet.write_row(
+            row_number,
+            0,
+            [
+                client.name,
+                client.company or "",
+                client.manager or "",
+                client.phones[0].phone if client.phones else "",
+                client.emails[0].email if client.emails else "",
+                client.trade_places[0].place if client.trade_places else "",
+                str(client.birth_date or ""),
+                client.status.value,
+            ],
+        )
+    workbook.close()
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=clients.xlsx"},
+    )
