@@ -1,0 +1,29 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      CLIENTS_DATABASE_URL: postgresql+psycopg://clients:clients@postgres:5432/clients
+      CLIENTS_PUBLIC_BASE_PATH: /vr/clients
+      CLIENTS_AUTO_CREATE_TABLES: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8015:8000"
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: clients
+      POSTGRES_USER: clients
+      POSTGRES_PASSWORD: clients
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clients -d clients"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+volumes:
+  postgres_data:
