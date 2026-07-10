@@ -43,7 +43,7 @@ function App() {
   </main>;
 }
 function Help({ active, onChange }: { active: HelpTab; onChange: (tab: HelpTab) => void }) {
-  const updateCommand = 'cd /var/www/html/vr/clients\n\ngit pull';
+  const updateCommand = '/var/www/html/vr/clients/update.sh';
   const copyUpdateCommand = async () => {
     await navigator.clipboard.writeText(updateCommand);
   };
