@@ -8,6 +8,7 @@ from app.db.session import Base
 class ClientStatus(StrEnum):
     active = "active"
     archived = "archived"
+    out_of_stock = "out_of_stock"
 
 
 class PhoneType(StrEnum):

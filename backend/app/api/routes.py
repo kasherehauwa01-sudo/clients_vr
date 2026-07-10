@@ -1,11 +1,11 @@
 from io import BytesIO
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 import xlsxwriter
 from app.db.session import get_db
-from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Phone, TradePlace
+from app.models.entities import AuditLog, Client, ClientStatus, Email, Import, ImportIssue, Phone, TradePlace
 from app.schemas.client import BulkUpdate, ClientDetail, ClientListItem, PagedClients
 from app.services.importer import import_files
 
@@ -106,12 +106,13 @@ def clients(
     }
     sort_column = sort_map.get(sort, Client.name)
     order_by = sort_column.desc().nullslast() if order == "desc" else sort_column.asc().nullslast()
+    availability_order = case((Client.status == ClientStatus.out_of_stock, 1), else_=0)
     stmt = (
         select(Client, Import.imported_at)
         .join(filtered_ids, filtered_ids.c.id == Client.id)
         .outerjoin(Import, Client.last_import_id == Import.id)
         .options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places))
-        .order_by(order_by, Client.id.asc())
+        .order_by(availability_order.asc(), order_by, Client.id.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
@@ -197,7 +198,7 @@ def export_clients(db: Session = Depends(get_db)):
     headers = ["Наименование", "Фирма", "Менеджер", "Телефон", "Email", "Место торговли", "Дата рождения", "Статус"]
     for column, header in enumerate(headers):
         worksheet.write(0, column, header)
-    stmt = select(Client).options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places)).order_by(Client.name)
+    stmt = select(Client).options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places)).order_by(case((Client.status == ClientStatus.out_of_stock, 1), else_=0), Client.name)
     for row_number, client in enumerate(db.scalars(stmt), start=1):
         worksheet.write_row(
             row_number,
