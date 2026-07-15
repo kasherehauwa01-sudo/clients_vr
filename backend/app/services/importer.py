@@ -1,8 +1,9 @@
+from dataclasses import dataclass, field
 from io import BytesIO
 import re
 import xlrd
 from openpyxl import load_workbook
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Phone, PhoneType, TradePlace
@@ -21,6 +22,20 @@ COLUMN_ORDER = [
     "contact_person",
     "company",
 ]
+
+FIELD_LABELS = {
+    "name": "Наименование",
+    "price_type": "Тип цены",
+    "manager": "Менеджер",
+    "birth_date": "Дата рождения",
+    "emails": "Email",
+    "common_phones": "Телефоны прочие",
+    "trade_places": "Места торговли",
+    "sms_phones": "Телефоны для СМС и рассылки",
+    "director": "Руководитель",
+    "contact_person": "Контактное лицо",
+    "company": "Фирма",
+}
 
 HEADER_ALIASES = {
     "наименование": "name",
@@ -53,14 +68,32 @@ HEADER_ALIASES = {
 }
 
 
+@dataclass
+class WorkbookRows:
+    rows: list[list[object]]
+    file_format: str
+    sheet_count: int
+    sheet_name: str
+
+
+@dataclass
+class ParsedRows:
+    rows: list[dict[str, object]]
+    logs: list[str] = field(default_factory=list)
+    total_rows: int = 0
+    read_rows: int = 0
+
+
 class ImportSummary(BaseModel):
     files: int = 0
     rows: int = 0
+    read: int = 0
     added: int = 0
     updated: int = 0
     skipped: int = 0
     errors: int = 0
     duplicates: int = 0
+    logs: list[str] = Field(default_factory=list)
 
 
 def _normalize_header(value: object) -> str:
@@ -79,19 +112,20 @@ def _map_by_positions(row: list[object]) -> dict[str, object]:
 def _detect_header(rows: list[list[object]]) -> tuple[int | None, dict[int, str]]:
     best_index: int | None = None
     best_mapping: dict[int, str] = {}
-    for index, row in enumerate(rows[:10]):
+    for index, row in enumerate(rows[:20]):
         mapping = {column_index: HEADER_ALIASES[key] for column_index, value in enumerate(row) if (key := _normalize_header(value)) in HEADER_ALIASES}
         if len(mapping) > len(best_mapping):
             best_index, best_mapping = index, mapping
     return (best_index, best_mapping) if len(best_mapping) >= 2 else (None, {})
 
 
-def _rows_from_xlsx(content: bytes) -> list[list[object]]:
-    ws = load_workbook(BytesIO(content), read_only=True, data_only=True).active
-    return [list(row) for row in ws.iter_rows(values_only=True)]
+def _rows_from_xlsx(content: bytes) -> WorkbookRows:
+    workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+    sheet = workbook[workbook.sheetnames[0]]
+    return WorkbookRows(rows=[list(row) for row in sheet.iter_rows(values_only=True)], file_format="xlsx", sheet_count=len(workbook.sheetnames), sheet_name=sheet.title)
 
 
-def _rows_from_xls(content: bytes) -> list[list[object]]:
+def _rows_from_xls(content: bytes) -> WorkbookRows:
     book = xlrd.open_workbook(file_contents=content)
     sheet = book.sheet_by_index(0)
     rows: list[list[object]] = []
@@ -107,28 +141,85 @@ def _rows_from_xls(content: bytes) -> list[list[object]]:
             else:
                 values.append(cell.value)
         rows.append(values)
-    return rows
+    return WorkbookRows(rows=rows, file_format="xls", sheet_count=book.nsheets, sheet_name=sheet.name)
 
 
-def _read_rows(filename: str, content: bytes) -> list[dict[str, object]]:
+def _read_workbook(filename: str, content: bytes) -> WorkbookRows:
     lower_name = filename.lower()
     if lower_name.endswith(".xlsx"):
-        raw_rows = _rows_from_xlsx(content)
-    elif lower_name.endswith(".xls"):
-        raw_rows = _rows_from_xls(content)
-    else:
-        raise ValueError("Поддерживаются только .xls и .xlsx")
-    raw_rows = [row for row in raw_rows if _row_has_data(row)]
-    if not raw_rows:
-        return []
-    header_index, mapping = _detect_header(raw_rows)
-    data_rows = raw_rows[header_index + 1 :] if header_index is not None else raw_rows
+        return _rows_from_xlsx(content)
+    if lower_name.endswith(".xls"):
+        return _rows_from_xls(content)
+    raise ValueError("Поддерживаются только .xls и .xlsx")
+
+
+def _format_preview_value(value: object) -> str:
+    text = clean_text(value)
+    return text if text is not None else "NULL"
+
+
+def _add_header_logs(logs: list[str], raw_rows: list[list[object]], header_index: int | None, mapping: dict[int, str]) -> None:
+    if header_index is None:
+        logs.append("Строка заголовков не найдена. Используется ожидаемый порядок столбцов.")
+        for index, field_name in enumerate(COLUMN_ORDER):
+            logs.append(f"Найдена колонка: {FIELD_LABELS[field_name]} -> column {index} (по порядку)")
+        return
+    header_row = raw_rows[header_index]
+    logs.append("Заголовки:")
+    for value in header_row:
+        if clean_text(value):
+            logs.append(str(clean_text(value)))
+    reversed_mapping = {field_name: column_index for column_index, field_name in mapping.items()}
+    for field_name in COLUMN_ORDER:
+        label = FIELD_LABELS[field_name]
+        column_index = reversed_mapping.get(field_name)
+        if column_index is None:
+            logs.append(f'Колонка "{label}" отсутствует')
+            logs.append("Используется NULL")
+        else:
+            logs.append(f"Найдена колонка: {label} -> column {column_index}")
+
+
+def _read_rows(filename: str, content: bytes) -> ParsedRows:
+    workbook_rows = _read_workbook(filename, content)
+    raw_rows = workbook_rows.rows
+    logs = [
+        f"Файл: {filename}",
+        f"Формат: {workbook_rows.file_format}",
+        f"Листов: {workbook_rows.sheet_count}",
+        f"Лист: {workbook_rows.sheet_name}",
+        f"Строк: {len(raw_rows)}",
+    ]
+    non_empty_rows = [row for row in raw_rows if _row_has_data(row)]
+    if not non_empty_rows:
+        logs.append("Файл не содержит строк с данными.")
+        return ParsedRows(rows=[], logs=logs, total_rows=len(raw_rows), read_rows=0)
+
+    header_index, mapping = _detect_header(non_empty_rows)
+    _add_header_logs(logs, non_empty_rows, header_index, mapping)
+    start_row = header_index + 2 if header_index is not None else 1
+    logs.append(f"Импорт начинается со строки: {start_row}")
+    data_rows = non_empty_rows[header_index + 1 :] if header_index is not None else non_empty_rows
+
     result: list[dict[str, object]] = []
-    for offset, row in enumerate(data_rows, start=(header_index + 2 if header_index is not None else 1)):
+    for offset, row in enumerate(data_rows, start=start_row):
+        if not _row_has_data(row):
+            logs.append(f"Строка {offset}. Причина: пустая строка")
+            continue
         mapped = {field: row[index] if index < len(row) else None for index, field in mapping.items()} if mapping else _map_by_positions(row)
         mapped["_row_number"] = offset
         result.append(mapped)
-    return result
+
+    for row in result[:10]:
+        logs.extend(
+            [
+                f"Строка {row.get('_row_number')}",
+                f"Наименование: {_format_preview_value(row.get('name'))}",
+                f"Email: {_format_preview_value(row.get('emails'))}",
+                f"Телефон: {_format_preview_value(row.get('sms_phones') or row.get('common_phones'))}",
+            ]
+        )
+    return ParsedRows(rows=result, logs=logs, total_rows=len(raw_rows), read_rows=len(result))
 
 
 def _find_client(db: Session, row: dict, sms: list[str], phones: list[str], emails: list[str]) -> tuple[Client | None, bool]:
@@ -183,17 +274,25 @@ def _fallback_name(row: dict, emails: list[str], sms: list[str], common: list[st
     )
 
 
+def _log_issue(db: Session, import_id: int, message: str, *, row_number: int | None = None, level: str = "info") -> None:
+    db.add(ImportIssue(import_id=import_id, row_number=row_number, level=level, message=message))
+
+
 def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
     total = ImportSummary(files=len(files))
     for filename, content in files:
-        imp = Import(file_name=filename)
+        imp = Import(file_name=filename, rows_count=0, added_count=0, updated_count=0, skipped_count=0, error_count=0)
         db.add(imp)
         db.flush()
         try:
-            rows = _read_rows(filename, content)
-            imp.rows_count = len(rows)
-            total.rows += len(rows)
-            for row in rows:
+            parsed = _read_rows(filename, content)
+            total.logs.extend(parsed.logs)
+            for message in parsed.logs:
+                _log_issue(db, imp.id, message)
+            imp.rows_count = parsed.read_rows
+            total.rows += parsed.total_rows
+            total.read += parsed.read_rows
+            for row in parsed.rows:
                 row_number = int(row.get("_row_number") or 0) or None
                 try:
                     created = False
@@ -230,7 +329,7 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
                         client_id = client.id
                     if duplicate:
                         total.duplicates += 1
-                        db.add(ImportIssue(import_id=imp.id, row_number=row_number, level="warning", message="Найдено несколько совпадений клиента"))
+                        _log_issue(db, imp.id, "Найдено несколько совпадений клиента", row_number=row_number, level="warning")
                     if created:
                         imp.added_count += 1
                         total.added += 1
@@ -241,10 +340,29 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
                 except Exception as exc:
                     imp.error_count += 1
                     total.errors += 1
-                    db.add(ImportIssue(import_id=imp.id, row_number=row_number, level="error", message=str(exc)))
+                    error_message = f"Строка {row_number}. Причина: {exc}"
+                    total.logs.append(error_message)
+                    _log_issue(db, imp.id, error_message, row_number=row_number, level="error")
+            imp.skipped_count = max(parsed.read_rows - imp.added_count - imp.updated_count - imp.error_count, 0)
+            total.skipped += imp.skipped_count
+            stats = [
+                f"Всего строк: {parsed.total_rows}",
+                f"Прочитано: {parsed.read_rows}",
+                f"Добавлено: {imp.added_count}",
+                f"Обновлено: {imp.updated_count}",
+                f"Пропущено: {imp.skipped_count}",
+                f"Ошибок: {imp.error_count}",
+            ]
+            if parsed.read_rows and not (imp.added_count or imp.updated_count) and imp.skipped_count == parsed.read_rows:
+                stats.extend(["Все записи были пропущены.", "Причина: строки прочитаны, но не были записаны в базу данных. Подробности смотрите в ошибках строк выше."])
+            total.logs.extend(stats)
+            for message in stats:
+                _log_issue(db, imp.id, message)
         except Exception as exc:
             imp.error_count += 1
             total.errors += 1
-            db.add(ImportIssue(import_id=imp.id, level="error", message=str(exc)))
+            message = str(exc)
+            total.logs.append(message)
+            _log_issue(db, imp.id, message, level="error")
         db.commit()
     return total

@@ -55,3 +55,6 @@ footer{display:flex;justify-content:center;gap:18px;align-items:center;padding:1
 .toolbar input{min-width:220px}
 }
 
+.import-log{margin:14px 0 18px;padding:16px 18px;border:1px solid var(--md-outline-variant);border-radius:22px;background:var(--md-surface);box-shadow:var(--shadow)}
+.import-log summary{cursor:pointer;font-weight:800;color:var(--md-primary)}
+.import-log pre{max-height:360px;overflow:auto;margin:14px 0 0;padding:14px;border-radius:16px;background:var(--md-surface-container);white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;line-height:1.45}

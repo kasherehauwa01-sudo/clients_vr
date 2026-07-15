@@ -31,6 +31,7 @@ function App() {
   const [page, setPage] = useState(1);
   const [detail, setDetail] = useState<any>(null);
   const [notice, setNotice] = useState('');
+  const [importLog, setImportLog] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const query = useMemo(() => new URLSearchParams({ page: String(page), page_size: '50', search: q }).toString(), [q, page]);
@@ -43,8 +44,10 @@ function App() {
     const fd = new FormData();
     [...files].forEach(f => fd.append('files', f));
     setNotice(`Загрузка файлов: ${files.length}`);
+    setImportLog([]);
     const r = await api('/imports', { method: 'POST', body: fd });
-    setNotice(`${r.message}. Добавлено: ${r.added}. Обновлено: ${r.updated}. Пропущено: ${r.skipped}. Ошибок: ${r.errors}`);
+    setNotice(`${r.message}. Всего строк: ${r.rows}. Прочитано: ${r.read}. Добавлено: ${r.added}. Обновлено: ${r.updated}. Пропущено: ${r.skipped}. Ошибок: ${r.errors}`);
+    setImportLog(r.logs || []);
     if (fileInputRef.current) fileInputRef.current.value = '';
     load();
   };
@@ -65,6 +68,7 @@ function App() {
     {activeTab === 'help' ? <Help active={helpTab} onChange={setHelpTab} /> : <>
       <section className="toolbar"><input placeholder="Поиск по клиентам, email, телефонам, фирме..." value={q} onChange={e => { setQ(e.target.value); setPage(1); }} /><a className="button tonal" href={`${API_BASE_URL}/clients-export.xlsx`}>Скачать</a></section>
       {notice && <div className="notice">{notice}</div>}
+      {importLog.length > 0 && <details className="import-log" open><summary>Журнал импорта</summary><pre>{importLog.join('\n')}</pre></details>}
       <div className="grid"><section className="table"><table><thead><tr><th>Наименование</th><th>Фирма</th><th>Менеджер</th><th>Телефон</th><th>Email</th><th>Место торговли</th><th>Дата рождения</th></tr></thead><tbody>{clients.map(c => <tr key={c.id} className={c.status === 'out_of_stock' ? 'muted-row' : ''} onClick={() => api(`/clients/${c.id}`).then(setDetail)}><td><b>{c.name}</b></td><td>{c.company}</td><td>{c.manager}</td><td>{c.phone}</td><td>{c.email}</td><td>{c.trade_place}</td><td>{c.birth_date}</td></tr>)}</tbody></table><footer><button disabled={page === 1} onClick={() => setPage(page - 1)}>Назад</button><span>{page} / {Math.ceil(total / 50) || 1} · {total} записей</span><button disabled={page * 50 >= total} onClick={() => setPage(page + 1)}>Вперед</button></footer></section>
         <aside>{detail ? <ClientCard c={detail} /> : <div className="card empty-state"><h2>Карточка клиента</h2><p>Выберите строку в реестре, чтобы посмотреть подробную информацию.</p></div>}</aside></div></>}
   </main>;
