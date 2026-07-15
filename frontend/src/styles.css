@@ -58,3 +58,14 @@ footer{display:flex;justify-content:center;gap:18px;align-items:center;padding:1
 .import-log{margin:14px 0 18px;padding:16px 18px;border:1px solid var(--md-outline-variant);border-radius:22px;background:var(--md-surface);box-shadow:var(--shadow)}
 .import-log summary{cursor:pointer;font-weight:800;color:var(--md-primary)}
 .import-log pre{max-height:360px;overflow:auto;margin:14px 0 0;padding:14px;border-radius:16px;background:var(--md-surface-container);white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;line-height:1.45}
+.logs-page{position:static;max-width:1120px}
+.logs-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
+.logs-header p{margin:0;border:0;color:var(--md-muted)}
+.logs-list{display:grid;gap:12px}
+.log-item{padding:14px 16px;border:1px solid var(--md-outline-variant);border-radius:18px;background:var(--md-surface-container)}
+.log-item.error{border-color:#fecaca;background:#fff1f2}
+.log-item.warning{border-color:#fed7aa;background:#fff7ed}
+.log-item h3{margin:8px 0 6px;color:var(--md-text)}
+.log-item p{margin:0;border:0;white-space:pre-wrap}
+.log-meta{display:flex;gap:8px;flex-wrap:wrap;color:var(--md-muted);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+@media(max-width:700px){.logs-header{flex-direction:column}.logs-header button{width:100%}}

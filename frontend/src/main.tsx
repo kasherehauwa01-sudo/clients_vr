@@ -4,8 +4,9 @@ import './styles.css';
 
 type Client = { id: number; name: string; company?: string; manager?: string; phone?: string; email?: string; trade_place?: string; birth_date?: string; status: ClientStatus };
 type ClientStatus = 'active' | 'archived' | 'out_of_stock';
-type MainTab = 'registry' | 'help';
+type MainTab = 'registry' | 'logs' | 'help';
 type HelpTab = 'features' | 'manual';
+type ProcessLog = { id: string; created_at?: string; source: string; level: string; process?: string; row_number?: number; message: string };
 
 const STATUS_LABELS: Record<ClientStatus, string> = {
   active: 'Активный',
@@ -32,12 +33,25 @@ function App() {
   const [detail, setDetail] = useState<any>(null);
   const [notice, setNotice] = useState('');
   const [importLog, setImportLog] = useState<string[]>([]);
+  const [processLogs, setProcessLogs] = useState<ProcessLog[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const query = useMemo(() => new URLSearchParams({ page: String(page), page_size: '50', search: q }).toString(), [q, page]);
   const load = () => api(`/clients?${query}`).then(d => { setClients(d.items); setTotal(d.total); });
 
-  useEffect(() => { load(); }, [query]);
+  useEffect(() => { if (activeTab === 'registry') load(); }, [query, activeTab]);
+
+  const loadLogs = async () => {
+    setLogsLoading(true);
+    try {
+      setProcessLogs(await api('/logs'));
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  useEffect(() => { if (activeTab === 'logs') loadLogs(); }, [activeTab]);
 
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -64,14 +78,17 @@ function App() {
         <button className="primary-action" onClick={() => fileInputRef.current?.click()}>Загрузить</button>
       </div>}
     </header>
-    <nav className="tabs"><button className={activeTab === 'registry' ? 'selected' : ''} onClick={() => setActiveTab('registry')}>Реестр</button><button className={activeTab === 'help' ? 'selected' : ''} onClick={() => setActiveTab('help')}>Помощь</button></nav>
-    {activeTab === 'help' ? <Help active={helpTab} onChange={setHelpTab} /> : <>
+    <nav className="tabs"><button className={activeTab === 'registry' ? 'selected' : ''} onClick={() => setActiveTab('registry')}>Реестр</button><button className={activeTab === 'logs' ? 'selected' : ''} onClick={() => setActiveTab('logs')}>Логи</button><button className={activeTab === 'help' ? 'selected' : ''} onClick={() => setActiveTab('help')}>Помощь</button></nav>
+    {activeTab === 'help' ? <Help active={helpTab} onChange={setHelpTab} /> : activeTab === 'logs' ? <Logs items={processLogs} loading={logsLoading} onRefresh={loadLogs} /> : <>
       <section className="toolbar"><input placeholder="Поиск по клиентам, email, телефонам, фирме..." value={q} onChange={e => { setQ(e.target.value); setPage(1); }} /><a className="button tonal" href={`${API_BASE_URL}/clients-export.xlsx`}>Скачать</a></section>
       {notice && <div className="notice">{notice}</div>}
       {importLog.length > 0 && <details className="import-log" open><summary>Журнал импорта</summary><pre>{importLog.join('\n')}</pre></details>}
       <div className="grid"><section className="table"><table><thead><tr><th>Наименование</th><th>Фирма</th><th>Менеджер</th><th>Телефон</th><th>Email</th><th>Место торговли</th><th>Дата рождения</th></tr></thead><tbody>{clients.map(c => <tr key={c.id} className={c.status === 'out_of_stock' ? 'muted-row' : ''} onClick={() => api(`/clients/${c.id}`).then(setDetail)}><td><b>{c.name}</b></td><td>{c.company}</td><td>{c.manager}</td><td>{c.phone}</td><td>{c.email}</td><td>{c.trade_place}</td><td>{c.birth_date}</td></tr>)}</tbody></table><footer><button disabled={page === 1} onClick={() => setPage(page - 1)}>Назад</button><span>{page} / {Math.ceil(total / 50) || 1} · {total} записей</span><button disabled={page * 50 >= total} onClick={() => setPage(page + 1)}>Вперед</button></footer></section>
         <aside>{detail ? <ClientCard c={detail} /> : <div className="card empty-state"><h2>Карточка клиента</h2><p>Выберите строку в реестре, чтобы посмотреть подробную информацию.</p></div>}</aside></div></>}
   </main>;
+}
+function Logs({ items, loading, onRefresh }: { items: ProcessLog[]; loading: boolean; onRefresh: () => void }) {
+  return <section className="card logs-page"><div className="logs-header"><div><h2>Логи</h2><p>События импорта, предупреждения, ошибки и операции пользователей с сервера.</p></div><button className="tonal" onClick={onRefresh} disabled={loading}>{loading ? 'Загрузка...' : 'Обновить'}</button></div><div className="logs-list">{items.length === 0 ? <p>Логов пока нет.</p> : items.map(item => <article className={`log-item ${item.level}`} key={item.id}><div className="log-meta"><span>{item.created_at?.slice(0, 19).replace('T', ' ') || '—'}</span><span>{item.source}</span><span>{item.level}</span>{item.row_number ? <span>Строка {item.row_number}</span> : null}</div><h3>{item.process || 'Процесс'}</h3><p>{item.message || '—'}</p></article>)}</div></section>;
 }
 function Help({ active, onChange }: { active: HelpTab; onChange: (tab: HelpTab) => void }) {
   const updateCommand = '/var/www/html/vr/clients/update.sh';

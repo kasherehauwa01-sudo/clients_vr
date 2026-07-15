@@ -164,6 +164,45 @@ def import_issues(import_id: int, db: Session = Depends(get_db)):
     return db.scalars(select(ImportIssue).where(ImportIssue.import_id == import_id).order_by(ImportIssue.id)).all()
 
 
+
+
+@router.get("/logs")
+def logs(db: Session = Depends(get_db), limit: int = 500):
+    limit = min(max(limit, 1), 2000)
+    import_issue_rows = db.execute(
+        select(ImportIssue, Import)
+        .join(Import, ImportIssue.import_id == Import.id)
+        .order_by(Import.id.desc(), ImportIssue.id.desc())
+        .limit(limit)
+    ).all()
+    audit_rows = db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)).all()
+    items = [
+        {
+            "id": f"import-{issue.id}",
+            "created_at": import_record.imported_at,
+            "source": "Импорт",
+            "level": issue.level,
+            "process": import_record.file_name,
+            "row_number": issue.row_number,
+            "message": issue.message,
+        }
+        for issue, import_record in import_issue_rows
+    ]
+    items.extend(
+        {
+            "id": f"audit-{audit.id}",
+            "created_at": audit.created_at,
+            "source": "Операция",
+            "level": "info",
+            "process": audit.action,
+            "row_number": None,
+            "message": audit.payload or "",
+        }
+        for audit in audit_rows
+    )
+    items.sort(key=lambda item: (item["created_at"] is not None, item["created_at"]), reverse=True)
+    return items[:limit]
+
 @router.post("/clients/bulk")
 def bulk_update(payload: BulkUpdate, db: Session = Depends(get_db)):
     clients_to_update = db.scalars(select(Client).where(Client.id.in_(payload.ids))).all()
