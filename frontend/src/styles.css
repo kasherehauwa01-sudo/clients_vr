@@ -31,7 +31,10 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .table th,.table td{padding:15px 14px;border-bottom:1px solid var(--md-outline-variant);vertical-align:top}
 .table tbody tr{cursor:pointer;transition:background .16s ease}
 .table tbody tr:hover{background:#eff6ff}
+.table tbody tr.selected-row{background:var(--md-primary-container);box-shadow:inset 4px 0 0 var(--md-primary)}
+.table tbody tr.selected-row:hover{background:var(--md-primary-container)}
 .muted-row{opacity:.68;background:#f8fbff}
+.muted-row.selected-row{opacity:1}
 .status{border-radius:999px;padding:5px 10px;white-space:nowrap;font-weight:700}
 .active{color:#006d3f;background:#d1fae5}
 .archived{color:#57515d;background:#e2e8f0}
