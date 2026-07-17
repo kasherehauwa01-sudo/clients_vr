@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Phone, PhoneType, TradePlace
-from app.services.normalization import clean_text, normalize_email, normalize_phone, parse_date, repair_legacy_excel_text, split_values
+from app.services.normalization import clean_text, extract_phones, normalize_email, parse_date, repair_legacy_excel_text, split_values
 
 COLUMN_ORDER = [
     "name",
@@ -323,8 +323,15 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
                     action = "client_updated"
                     with db.begin_nested():
                         emails = [email for email in (normalize_email(value) for value in split_values(row.get("emails"))) if email]
-                        sms = [phone for phone in (normalize_phone(value) for value in split_values(row.get("sms_phones"))) if phone]
-                        common = [phone for phone in (normalize_phone(value) for value in split_values(row.get("common_phones"))) if phone]
+                        sms = extract_phones(row.get("sms_phones"))
+                        common = list(
+                            dict.fromkeys(
+                                extract_phones(row.get("common_phones"))
+                                + extract_phones(row.get("trade_places"))
+                                + extract_phones(row.get("director"))
+                                + extract_phones(row.get("contact_person"))
+                            )
+                        )
                         places = [place for place in (clean_text(value) for value in split_values(row.get("trade_places"))) if place]
                         name = _fallback_name(row, emails, sms, common)
                         client, duplicate = _find_client(db, row | {"name": name}, sms, common, emails)

@@ -3,6 +3,9 @@ from datetime import date, datetime
 from email_validator import EmailNotValidError, validate_email
 
 PHONE_RE = re.compile(r"\d+")
+PHONE_IN_TEXT_RE = re.compile(
+    r"(?<!\d)(?:\+?[78](?:[\s().-]*\d){10}|(?:\d[\s().-]*){9}\d)(?!\d)"
+)
 
 
 def clean_text(value: object) -> str | None:
@@ -17,11 +20,21 @@ def normalize_phone(value: object) -> str | None:
     if not text:
         return None
     digits = "".join(PHONE_RE.findall(text))
+    if len(digits) == 10:
+        digits = "7" + digits
     if len(digits) == 11 and digits.startswith("8"):
         digits = "7" + digits[1:]
-    if len(digits) < 7:
+    if len(digits) != 11 or not digits.startswith("7"):
         return None
-    return f"+{digits}" if not digits.startswith("+") else digits
+    return f"+{digits}"
+
+
+def extract_phones(value: object) -> list[str]:
+    """Находит все российские номера внутри текста с именами и адресами."""
+    if value is None:
+        return []
+    phones = [normalize_phone(match.group()) for match in PHONE_IN_TEXT_RE.finditer(str(value))]
+    return list(dict.fromkeys(phone for phone in phones if phone))
 
 
 def split_values(value: object) -> list[str]:
