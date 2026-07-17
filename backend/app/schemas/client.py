@@ -24,6 +24,10 @@ class ClientDetail(ClientListItem):
     price_type: str | None = None
     director: str | None = None
     contact_person: str | None = None
+    client_source: str | None = None
+    last_purchase_date: date | None = None
+    buyer_type: str | None = None
+    counterparty_type: str | None = None
     created_at: datetime
     updated_at: datetime | None = None
     first_import_at: datetime | None = None

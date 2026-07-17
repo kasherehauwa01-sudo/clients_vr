@@ -19,8 +19,12 @@ COLUMN_ORDER = [
     "trade_places",
     "sms_phones",
     "director",
-    "contact_person",
     "company",
+    "contact_person",
+    "client_source",
+    "last_purchase_date",
+    "buyer_type",
+    "counterparty_type",
 ]
 
 FIELD_LABELS = {
@@ -35,6 +39,10 @@ FIELD_LABELS = {
     "director": "Руководитель",
     "contact_person": "Контактное лицо",
     "company": "Фирма",
+    "client_source": "Источник клиента",
+    "last_purchase_date": "Дата последней покупки",
+    "buyer_type": "Вид покупателя",
+    "counterparty_type": "Вид контрагента",
 }
 
 HEADER_ALIASES = {
@@ -65,6 +73,14 @@ HEADER_ALIASES = {
     "контакт": "contact_person",
     "фирма": "company",
     "компания": "company",
+    "источникклиента": "client_source",
+    "источник": "client_source",
+    "датапоследнейпокупки": "last_purchase_date",
+    "последняяпокупка": "last_purchase_date",
+    "видпокупателя": "buyer_type",
+    "типпокупателя": "buyer_type",
+    "видконтрагента": "counterparty_type",
+    "типконтрагента": "counterparty_type",
 }
 
 
@@ -314,6 +330,10 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
                             birth_date=parse_date(row.get("birth_date")),
                             director=clean_text(row.get("director")),
                             contact_person=clean_text(row.get("contact_person")),
+                            client_source=clean_text(row.get("client_source")),
+                            last_purchase_date=parse_date(row.get("last_purchase_date")),
+                            buyer_type=clean_text(row.get("buyer_type")),
+                            counterparty_type=clean_text(row.get("counterparty_type")),
                             last_import_id=imp.id,
                         )
                         if client:

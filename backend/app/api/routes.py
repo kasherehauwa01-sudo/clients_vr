@@ -36,6 +36,9 @@ def apply_client_filters(query, *, search=None, manager=None, company=None, pric
                 func.lower(Client.company).like(term),
                 func.lower(Client.contact_person).like(term),
                 func.lower(Client.director).like(term),
+                func.lower(Client.client_source).like(term),
+                func.lower(Client.buyer_type).like(term),
+                func.lower(Client.counterparty_type).like(term),
                 func.lower(Email.email).like(term),
                 Phone.phone.like(term),
                 func.lower(TradePlace.place).like(term),
@@ -136,6 +139,10 @@ def client_detail(client_id: int, db: Session = Depends(get_db)):
         price_type=client.price_type,
         director=client.director,
         contact_person=client.contact_person,
+        client_source=client.client_source,
+        last_purchase_date=client.last_purchase_date,
+        buyer_type=client.buyer_type,
+        counterparty_type=client.counterparty_type,
         created_at=client.created_at,
         updated_at=client.updated_at,
         first_import_at=first_import.imported_at if first_import else None,
@@ -234,7 +241,11 @@ def export_clients(db: Session = Depends(get_db)):
     output = BytesIO()
     workbook = xlsxwriter.Workbook(output)
     worksheet = workbook.add_worksheet("clients")
-    headers = ["Наименование", "Фирма", "Менеджер", "Телефон", "Email", "Место торговли", "Дата рождения", "Статус"]
+    headers = [
+        "Наименование", "Фирма", "Менеджер", "Телефон", "Email", "Место торговли",
+        "Дата рождения", "Источник клиента", "Дата последней покупки", "Вид покупателя",
+        "Вид контрагента", "Статус",
+    ]
     for column, header in enumerate(headers):
         worksheet.write(0, column, header)
     stmt = select(Client).options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places)).order_by(case((Client.status == ClientStatus.out_of_stock, 1), else_=0), Client.name)
@@ -250,6 +261,10 @@ def export_clients(db: Session = Depends(get_db)):
                 client.emails[0].email if client.emails else "",
                 client.trade_places[0].place if client.trade_places else "",
                 str(client.birth_date or ""),
+                client.client_source or "",
+                str(client.last_purchase_date or ""),
+                client.buyer_type or "",
+                client.counterparty_type or "",
                 client.status.value,
             ],
         )
