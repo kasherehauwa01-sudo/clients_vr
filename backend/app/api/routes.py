@@ -12,6 +12,12 @@ from app.services.importer import import_files
 router = APIRouter(prefix="/api", tags=["clients"])
 
 
+@router.get("/health")
+def health(db: Session = Depends(get_db)):
+    db.execute(select(1))
+    return {"status": "ok"}
+
+
 def to_list_item(client: Client, last_import_at=None) -> ClientListItem:
     return ClientListItem(
         id=client.id,
