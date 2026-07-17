@@ -123,6 +123,17 @@ def clients(
     return PagedClients(items=items, total=total, page=page, page_size=page_size)
 
 
+@router.get("/clients-filter-options")
+def client_filter_options(db: Session = Depends(get_db)):
+    managers = db.scalars(
+        select(Client.manager).where(Client.manager.is_not(None), Client.manager != "").distinct().order_by(Client.manager)
+    ).all()
+    price_types = db.scalars(
+        select(Client.price_type).where(Client.price_type.is_not(None), Client.price_type != "").distinct().order_by(Client.price_type)
+    ).all()
+    return {"managers": managers, "price_types": price_types}
+
+
 @router.get("/clients/{client_id}", response_model=ClientDetail)
 def client_detail(client_id: int, db: Session = Depends(get_db)):
     client = db.scalar(
