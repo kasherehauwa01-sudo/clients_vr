@@ -42,13 +42,11 @@ def upgrade() -> None:
         sa.column("client_id", sa.Integer),
         sa.column("place", sa.String),
     )
-    phones = sa.table(
-        "phones",
-        sa.column("client_id", sa.Integer),
-        sa.column("phone", sa.String),
-        sa.column("type", sa.String),
-    )
-    existing = set(bind.execute(sa.select(phones.c.client_id, phones.c.phone)).all())
+    phones = sa.table("phones", sa.column("client_id", sa.Integer), sa.column("phone", sa.String))
+    existing = {
+        (row.client_id, row.phone)
+        for row in bind.execute(sa.select(phones.c.client_id, phones.c.phone))
+    }
     found: dict[int, set[str]] = {}
     for row in bind.execute(sa.select(clients.c.id, clients.c.director, clients.c.contact_person)):
         found[row.id] = _extract(row.director) | _extract(row.contact_person)
@@ -61,7 +59,16 @@ def upgrade() -> None:
         if (client_id, phone) not in existing
     ]
     if additions:
-        bind.execute(sa.insert(phones), additions)
+        # Значение type задается SQL-литералом: PostgreSQL сразу приводит его к
+        # enum phonetype. Параметр String здесь приводил к падению миграции и 502.
+        bind.execute(
+            sa.text(
+                "INSERT INTO phones (client_id, phone, type) "
+                "VALUES (:client_id, :phone, 'common') "
+                "ON CONFLICT ON CONSTRAINT uq_client_phone_type DO NOTHING"
+            ),
+            additions,
+        )
 
 
 def downgrade() -> None:
