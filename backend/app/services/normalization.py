@@ -25,10 +25,25 @@ def normalize_phone(value: object) -> str | None:
 
 
 def split_values(value: object) -> list[str]:
-    text = clean_text(value)
-    if not text:
+    if value is None:
         return []
-    return [part.strip() for part in re.split(r"[;,\n]+", text) if part.strip()]
+    # Переносы строк в Excel часто разделяют несколько телефонов или адресов.
+    # Нормализуем каждый элемент только после разделения, иначе clean_text удалит переносы.
+    parts = re.split(r"[;,\r\n]+", str(value))
+    return [text for part in parts if (text := clean_text(part))]
+
+
+def repair_legacy_excel_text(value: object) -> object:
+    """Исправляет кириллицу из старых XLS, ошибочно декодированную как Latin-1."""
+    if not isinstance(value, str) or not value:
+        return value
+    try:
+        repaired = value.encode("latin1").decode("cp1251")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
+    original_cyrillic = sum("а" <= char.lower() <= "я" or char.lower() == "ё" for char in value)
+    repaired_cyrillic = sum("а" <= char.lower() <= "я" or char.lower() == "ё" for char in repaired)
+    return repaired if repaired_cyrillic > original_cyrillic else value
 
 
 def normalize_email(value: object) -> str | None:

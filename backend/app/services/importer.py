@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Phone, PhoneType, TradePlace
-from app.services.normalization import clean_text, normalize_email, normalize_phone, parse_date, split_values
+from app.services.normalization import clean_text, normalize_email, normalize_phone, parse_date, repair_legacy_excel_text, split_values
 
 COLUMN_ORDER = [
     "name",
@@ -90,6 +90,7 @@ class WorkbookRows:
     file_format: str
     sheet_count: int
     sheet_name: str
+    repaired_cells: int = 0
 
 
 @dataclass
@@ -145,6 +146,7 @@ def _rows_from_xls(content: bytes) -> WorkbookRows:
     book = xlrd.open_workbook(file_contents=content)
     sheet = book.sheet_by_index(0)
     rows: list[list[object]] = []
+    repaired_cells = 0
     for row_index in range(sheet.nrows):
         values: list[object] = []
         for column_index in range(sheet.ncols):
@@ -155,9 +157,11 @@ def _rows_from_xls(content: bytes) -> WorkbookRows:
                 except Exception:
                     values.append(cell.value)
             else:
-                values.append(cell.value)
+                value = repair_legacy_excel_text(cell.value)
+                repaired_cells += int(value != cell.value)
+                values.append(value)
         rows.append(values)
-    return WorkbookRows(rows=rows, file_format="xls", sheet_count=book.nsheets, sheet_name=sheet.name)
+    return WorkbookRows(rows=rows, file_format="xls", sheet_count=book.nsheets, sheet_name=sheet.name, repaired_cells=repaired_cells)
 
 
 def _read_workbook(filename: str, content: bytes) -> WorkbookRows:
@@ -206,6 +210,8 @@ def _read_rows(filename: str, content: bytes) -> ParsedRows:
         f"Лист: {workbook_rows.sheet_name}",
         f"Строк: {len(raw_rows)}",
     ]
+    if workbook_rows.repaired_cells:
+        logs.append(f"Исправлена кодировка ячеек: {workbook_rows.repaired_cells}")
     non_empty_rows = [row for row in raw_rows if _row_has_data(row)]
     if not non_empty_rows:
         logs.append("Файл не содержит строк с данными.")
