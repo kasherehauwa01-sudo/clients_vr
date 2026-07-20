@@ -293,7 +293,21 @@ def bulk_delete(ids: str, db: Session = Depends(get_db)):
 
 
 @router.get("/clients-export.xlsx")
-def export_clients(db: Session = Depends(get_db)):
+def export_clients(
+    db: Session = Depends(get_db),
+    search: str | None = None,
+    manager: str | None = None,
+    company: str | None = None,
+    price_type: str | None = None,
+    buyer_type: str | None = None,
+    counterparty_type: str | None = None,
+    trade_place: str | None = None,
+    has_email: bool | None = None,
+    has_phone: bool | None = None,
+    status: str | None = None,
+    birth_day: int | None = None,
+    birth_month: int | None = None,
+):
     output = BytesIO()
     workbook = xlsxwriter.Workbook(output)
     worksheet = workbook.add_worksheet("clients")
@@ -304,7 +318,27 @@ def export_clients(db: Session = Depends(get_db)):
     ]
     for column, header in enumerate(headers):
         worksheet.write(0, column, header)
-    stmt = select(Client).options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places)).order_by(case((Client.status == ClientStatus.out_of_stock, 1), else_=0), Client.name)
+    filtered_ids = apply_client_filters(
+        select(Client.id),
+        search=search,
+        manager=manager,
+        company=company,
+        price_type=price_type,
+        buyer_type=buyer_type,
+        counterparty_type=counterparty_type,
+        trade_place=trade_place,
+        has_email=has_email,
+        has_phone=has_phone,
+        status=status,
+        birth_day=birth_day,
+        birth_month=birth_month,
+    ).distinct().subquery()
+    stmt = (
+        select(Client)
+        .join(filtered_ids, filtered_ids.c.id == Client.id)
+        .options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places))
+        .order_by(case((Client.status == ClientStatus.out_of_stock, 1), else_=0), Client.name, Client.id)
+    )
     for row_number, client in enumerate(db.scalars(stmt), start=1):
         worksheet.write_row(
             row_number,
