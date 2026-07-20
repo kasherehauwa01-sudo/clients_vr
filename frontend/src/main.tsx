@@ -4,9 +4,8 @@ import './styles.css';
 
 type Client = { id: number; name: string; company?: string; manager?: string; phone?: string; email?: string; trade_place?: string; birth_date?: string; status: ClientStatus };
 type ClientStatus = 'active' | 'archived' | 'out_of_stock';
-type MainTab = 'registry' | 'logs' | 'help';
+type MainTab = 'registry' | 'help';
 type HelpTab = 'features' | 'manual';
-type ProcessLog = { id: string; created_at?: string; source: string; level: string; process?: string; row_number?: number; message: string };
 type FilterOptions = { managers: string[]; price_types: string[]; buyer_types: string[]; counterparty_types: string[] };
 
 const STATUS_LABELS: Record<ClientStatus, string> = {
@@ -41,9 +40,6 @@ function App() {
   const [detail, setDetail] = useState<any>(null);
   const [selectedClientId, setSelectedClientId] = useState<number | null>(null);
   const [notice, setNotice] = useState('');
-  const [importLog, setImportLog] = useState<string[]>([]);
-  const [processLogs, setProcessLogs] = useState<ProcessLog[]>([]);
-  const [logsLoading, setLogsLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const filterQuery = useMemo(() => {
@@ -70,26 +66,13 @@ function App() {
   useEffect(() => { if (activeTab === 'registry') load(); }, [query, activeTab]);
   useEffect(() => { api('/clients-filter-options').then(setFilterOptions); }, []);
 
-  const loadLogs = async () => {
-    setLogsLoading(true);
-    try {
-      setProcessLogs(await api('/logs'));
-    } finally {
-      setLogsLoading(false);
-    }
-  };
-
-  useEffect(() => { if (activeTab === 'logs') loadLogs(); }, [activeTab]);
-
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
     const fd = new FormData();
     [...files].forEach(f => fd.append('files', f));
     setNotice(`Загрузка файлов: ${files.length}`);
-    setImportLog([]);
     const r = await api('/imports', { method: 'POST', body: fd });
     setNotice(`${r.message}. Всего строк: ${r.rows}. Прочитано: ${r.read}. Добавлено: ${r.added}. Обновлено: ${r.updated}. Пропущено: ${r.skipped}. Ошибок: ${r.errors}`);
-    setImportLog(r.logs || []);
     if (fileInputRef.current) fileInputRef.current.value = '';
     load();
   };
@@ -106,17 +89,13 @@ function App() {
         <button className="primary-action" onClick={() => fileInputRef.current?.click()}>Загрузить</button>
       </div>}
     </header>
-    <nav className="tabs"><button className={activeTab === 'registry' ? 'selected' : ''} onClick={() => setActiveTab('registry')}>Реестр</button><button className={activeTab === 'logs' ? 'selected' : ''} onClick={() => setActiveTab('logs')}>Логи</button><button className={activeTab === 'help' ? 'selected' : ''} onClick={() => setActiveTab('help')}>Помощь</button></nav>
-    {activeTab === 'help' ? <Help active={helpTab} onChange={setHelpTab} /> : activeTab === 'logs' ? <Logs items={processLogs} loading={logsLoading} onRefresh={loadLogs} /> : <>
+    <nav className="tabs"><button className={activeTab === 'registry' ? 'selected' : ''} onClick={() => setActiveTab('registry')}>Реестр</button><button className={activeTab === 'help' ? 'selected' : ''} onClick={() => setActiveTab('help')}>Помощь</button></nav>
+    {activeTab === 'help' ? <Help active={helpTab} onChange={setHelpTab} /> : <>
       <section className="toolbar filters"><input className="search" placeholder="Поиск по клиентам, email, телефонам, фирме..." value={q} onChange={e => { setQ(e.target.value); setPage(1); }} /><div className="filter-row"><select aria-label="Тип цены" value={priceType} onChange={e => { setPriceType(e.target.value); setPage(1); }}><option value="">Все типы цены</option>{filterOptions.price_types.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Вид покупателя" value={buyerType} onChange={e => { setBuyerType(e.target.value); setPage(1); }}><option value="">Все виды покупателей</option>{filterOptions.buyer_types.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Вид контрагента" value={counterpartyType} onChange={e => { setCounterpartyType(e.target.value); setPage(1); }}><option value="">Все виды контрагентов</option>{filterOptions.counterparty_types.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Менеджер" value={manager} onChange={e => { setManager(e.target.value); setPage(1); }}><option value="">Все менеджеры</option>{filterOptions.managers.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Наличие телефона" value={hasPhone} onChange={e => { setHasPhone(e.target.value); setPage(1); }}><option value="">Телефон: все</option><option value="true">Телефон: есть</option><option value="false">Телефон: нет</option></select><select aria-label="Наличие Email" value={hasEmail} onChange={e => { setHasEmail(e.target.value); setPage(1); }}><option value="">Email: все</option><option value="true">Email: есть</option><option value="false">Email: нет</option></select><button className="tonal" type="button" onClick={resetFilters}>Сбросить фильтры</button><a className="button tonal" href={exportUrl}>Скачать</a></div></section><div className="registry-summary">В реестре: <b>{total}</b> строк</div>
       {notice && <div className="notice">{notice}</div>}
-      {importLog.length > 0 && <details className="import-log" open><summary>Журнал импорта</summary><pre>{importLog.join('\n')}</pre></details>}
       <div className="grid"><section className="table"><table><thead><tr><th>Наименование</th><th>Фирма</th><th>Менеджер</th><th>Телефоны</th></tr></thead><tbody>{clients.map(c => <tr key={c.id} className={[c.status === 'out_of_stock' ? 'muted-row' : '', selectedClientId === c.id ? 'selected-row' : ''].filter(Boolean).join(' ')} aria-selected={selectedClientId === c.id} onClick={() => { setSelectedClientId(c.id); api(`/clients/${c.id}`).then(setDetail); }}><td><b>{c.name}</b></td><td>{c.company}</td><td>{c.manager}</td><td>{c.phone}</td></tr>)}</tbody></table><footer><button disabled={page === 1} onClick={() => setPage(page - 1)}>Назад</button><span>{page} / {Math.ceil(total / 50) || 1} · {total} записей</span><button disabled={page * 50 >= total} onClick={() => setPage(page + 1)}>Вперед</button></footer></section>
         <aside>{detail ? <ClientCard c={detail} /> : <div className="card empty-state"><h2>Карточка клиента</h2><p>Выберите строку в реестре, чтобы посмотреть подробную информацию.</p></div>}</aside></div></>}
   </main>;
-}
-function Logs({ items, loading, onRefresh }: { items: ProcessLog[]; loading: boolean; onRefresh: () => void }) {
-  return <section className="card logs-page"><div className="logs-header"><div><h2>Логи</h2><p>События импорта, предупреждения, ошибки и операции пользователей с сервера.</p></div><button className="tonal" onClick={onRefresh} disabled={loading}>{loading ? 'Загрузка...' : 'Обновить'}</button></div><div className="logs-list">{items.length === 0 ? <p>Логов пока нет.</p> : items.map(item => <article className={`log-item ${item.level}`} key={item.id}><div className="log-meta"><span>{item.created_at?.slice(0, 19).replace('T', ' ') || '—'}</span><span>{item.source}</span><span>{item.level}</span>{item.row_number ? <span>Строка {item.row_number}</span> : null}</div><h3>{item.process || 'Процесс'}</h3><p>{item.message || '—'}</p></article>)}</div></section>;
 }
 function Help({ active, onChange }: { active: HelpTab; onChange: (tab: HelpTab) => void }) {
   const updateCommand = '/var/www/html/vr/clients/update.sh';
