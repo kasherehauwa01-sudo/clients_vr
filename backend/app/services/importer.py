@@ -244,25 +244,43 @@ def _read_rows(filename: str, content: bytes) -> ParsedRows:
     return ParsedRows(rows=result, logs=logs, total_rows=len(raw_rows), read_rows=len(result))
 
 
+def _company_matches(client: Client, company: str | None) -> bool:
+    # В XLS один и тот же контактный телефон/email может относиться к разным фирмам.
+    # Поэтому не склеиваем разные строки клиента, если в файле явно указана другая фирма.
+    existing_company = clean_text(client.company)
+    return not company or not existing_company or existing_company == company
+
+
 def _find_client(db: Session, row: dict, sms: list[str], phones: list[str], emails: list[str]) -> tuple[Client | None, bool]:
-    for phone_set, type_filter in ((sms, PhoneType.sms), (phones + sms, None)):
-        if phone_set:
-            query = select(Client).join(Phone).where(Phone.phone.in_(phone_set))
-            if type_filter:
-                query = query.where(Phone.type == type_filter)
-            found = db.scalars(query).unique().all()
-            if found:
-                return found[0], len(found) > 1
-    if emails:
-        found = db.scalars(select(Client).join(Email).where(Email.email.in_(emails))).unique().all()
-        if found:
-            return found[0], len(found) > 1
     name, company = clean_text(row.get("name")), clean_text(row.get("company"))
     if name and company:
         found = db.scalars(select(Client).where(Client.name == name, Client.company == company)).all()
         if found:
             return found[0], len(found) > 1
+    for phone_set, type_filter in ((sms, PhoneType.sms), (phones + sms, None)):
+        if phone_set:
+            query = select(Client).join(Phone).where(Phone.phone.in_(phone_set))
+            if type_filter:
+                query = query.where(Phone.type == type_filter)
+            found = [client for client in db.scalars(query).unique().all() if _company_matches(client, company)]
+            if found:
+                return found[0], len(found) > 1
+    if emails:
+        found = [
+            client
+            for client in db.scalars(select(Client).join(Email).where(Email.email.in_(emails))).unique().all()
+            if _company_matches(client, company)
+        ]
+        if found:
+            return found[0], len(found) > 1
     return None, False
+
+
+def _apply_client_data(client: Client, data: dict[str, object]) -> None:
+    for key, value in data.items():
+        # Пустые значения из очередной строки XLS не должны затирать уже загруженные данные.
+        if key == "last_import_id" or value not in (None, ""):
+            setattr(client, key, value)
 
 
 def _sync_children(client: Client, emails: list[str], sms: list[str], common: list[str], places: list[str]) -> None:
@@ -350,8 +368,7 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
                             last_import_id=imp.id,
                         )
                         if client:
-                            for key, value in data.items():
-                                setattr(client, key, value)
+                            _apply_client_data(client, data)
                         else:
                             client = Client(**data, first_import_id=imp.id)
                             db.add(client)
