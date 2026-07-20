@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Phone, PhoneType, TradePlace
-from app.services.normalization import clean_text, extract_phones, normalize_email, parse_date, repair_legacy_excel_text, split_values
+from app.services.normalization import clean_multiline_text, clean_text, extract_phones, normalize_email, parse_date, repair_legacy_excel_text, split_values
 
 COLUMN_ORDER = [
     "name",
@@ -361,6 +361,8 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
                             birth_date=parse_date(row.get("birth_date")),
                             director=clean_text(row.get("director")),
                             contact_person=clean_text(row.get("contact_person")),
+                            raw_common_phones=clean_multiline_text(row.get("common_phones")),
+                            raw_sms_phones=clean_multiline_text(row.get("sms_phones")),
                             client_source=clean_text(row.get("client_source")),
                             last_purchase_date=parse_date(row.get("last_purchase_date")),
                             buyer_type=clean_text(row.get("buyer_type")),

@@ -12,9 +12,11 @@ main{padding:28px;max-width:1540px;margin:auto}
 .tabs,.subtabs{padding:6px;border-radius:999px;background:var(--md-surface-container);width:max-content}
 .tabs button,.subtabs button{font-weight:700;border-radius:999px}
 .selected{border-color:transparent!important;background:var(--md-secondary-container)!important;color:var(--md-on-primary-container)!important}
-.toolbar{padding:8px;border-radius:22px;background:var(--md-surface);box-shadow:var(--shadow)}
-.toolbar input{flex:1;min-width:320px;border-color:transparent;background:var(--md-surface-container);font-size:15px}
+.toolbar{display:flex;flex-direction:column;align-items:stretch;padding:8px;border-radius:22px;background:var(--md-surface);box-shadow:var(--shadow)}
+.toolbar input{width:100%;min-width:320px;border-color:transparent;background:var(--md-surface-container);font-size:15px}
+.filter-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .toolbar select{min-width:170px;border-color:transparent;background:var(--md-surface-container);font-size:14px}
+.registry-summary{margin:-4px 0 14px;padding:0 4px;color:var(--md-muted);font-weight:800}
 input,textarea,select,button,.button{border:1px solid var(--md-outline-variant);border-radius:16px;background:var(--md-surface);padding:12px 16px;color:var(--md-text);text-decoration:none;transition:background .18s ease,box-shadow .18s ease,transform .18s ease,border-color .18s ease}
 button,.button{display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;font-weight:700}
 button:hover,.button:hover{background:var(--md-surface-container-high);box-shadow:0 2px 8px #00000012}
@@ -44,7 +46,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .help{position:static;max-width:980px}
 .card h2{margin-top:0;letter-spacing:-.02em}
 .card h3{margin-bottom:6px;color:var(--md-primary)}
-.card p{border-bottom:1px solid var(--md-outline-variant);padding-bottom:10px}
+.card p{border-bottom:1px solid var(--md-outline-variant);padding-bottom:10px;white-space:pre-line}
 .card li{margin:9px 0}
 .copy-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:stretch;margin:16px 0}
 .copy-row textarea{min-height:58px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical;background:var(--md-surface-container)}
@@ -57,6 +59,7 @@ footer{display:flex;justify-content:center;gap:18px;align-items:center;padding:1
 .table{overflow:auto}
 .tabs,.subtabs{width:100%;overflow:auto}
 .toolbar input{min-width:220px}
+.filter-row>*{flex:1 1 180px}
 }
 
 .import-log{margin:14px 0 18px;padding:16px 18px;border:1px solid var(--md-outline-variant);border-radius:22px;background:var(--md-surface);box-shadow:var(--shadow)}

@@ -24,6 +24,8 @@ class ClientDetail(ClientListItem):
     price_type: str | None = None
     director: str | None = None
     contact_person: str | None = None
+    raw_common_phones: str | None = None
+    raw_sms_phones: str | None = None
     client_source: str | None = None
     last_purchase_date: date | None = None
     buyer_type: str | None = None

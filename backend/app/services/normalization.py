@@ -15,6 +15,15 @@ def clean_text(value: object) -> str | None:
     return text or None
 
 
+def clean_multiline_text(value: object) -> str | None:
+    if value is None:
+        return None
+    # Для отображения исходных XLS-полей сохраняем границы строк и прячем служебный разделитель "||".
+    lines = re.split(r"\s*\|\|\s*|[\r\n]+", str(value))
+    text = "\n".join(line for part in lines if (line := clean_text(part)))
+    return text or None
+
+
 def normalize_phone(value: object) -> str | None:
     text = clean_text(value)
     if not text:
