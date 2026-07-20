@@ -40,9 +40,9 @@ def extract_phones(value: object) -> list[str]:
 def split_values(value: object) -> list[str]:
     if value is None:
         return []
-    # Переносы строк в Excel часто разделяют несколько телефонов или адресов.
-    # Нормализуем каждый элемент только после разделения, иначе clean_text удалит переносы.
-    parts = re.split(r"[;,\r\n]+", str(value))
+    # Переносы строк, запятые, точки с запятой и разделитель "||" в Excel
+    # означают отдельные значения. Делим до clean_text, чтобы не потерять границы строк.
+    parts = re.split(r"\s*\|\|\s*|[;,\r\n]+", str(value))
     return [text for part in parts if (text := clean_text(part))]
 
 

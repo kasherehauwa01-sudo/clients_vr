@@ -28,7 +28,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .table{background:color-mix(in srgb,var(--md-surface) 94%,transparent);border:1px solid #ffffffa8;border-radius:28px;overflow:hidden;box-shadow:var(--shadow);backdrop-filter:blur(10px)}
 .table table{width:100%;border-collapse:collapse}
 .table thead th{position:sticky;top:0;background:var(--md-surface-container);z-index:1;text-align:left;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--md-muted)}
-.table th,.table td{padding:15px 14px;border-bottom:1px solid var(--md-outline-variant);vertical-align:top}
+.table th,.table td{padding:15px 14px;border-bottom:1px solid var(--md-outline-variant);vertical-align:top;white-space:pre-line}
 .table tbody tr{cursor:pointer;transition:background .16s ease}
 .table tbody tr:hover{background:#eff6ff}
 .table tbody tr.selected-row{background:var(--md-primary-container);box-shadow:inset 4px 0 0 var(--md-primary)}
