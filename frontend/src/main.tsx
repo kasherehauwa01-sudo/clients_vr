@@ -7,7 +7,7 @@ type ClientStatus = 'active' | 'archived' | 'out_of_stock';
 type MainTab = 'registry' | 'logs' | 'help';
 type HelpTab = 'features' | 'manual';
 type ProcessLog = { id: string; created_at?: string; source: string; level: string; process?: string; row_number?: number; message: string };
-type FilterOptions = { managers: string[]; price_types: string[] };
+type FilterOptions = { managers: string[]; price_types: string[]; buyer_types: string[]; counterparty_types: string[] };
 
 const STATUS_LABELS: Record<ClientStatus, string> = {
   active: 'Активный',
@@ -34,7 +34,9 @@ function App() {
   const [priceType, setPriceType] = useState('');
   const [hasPhone, setHasPhone] = useState('');
   const [hasEmail, setHasEmail] = useState('');
-  const [filterOptions, setFilterOptions] = useState<FilterOptions>({ managers: [], price_types: [] });
+  const [buyerType, setBuyerType] = useState('');
+  const [counterpartyType, setCounterpartyType] = useState('');
+  const [filterOptions, setFilterOptions] = useState<FilterOptions>({ managers: [], price_types: [], buyer_types: [], counterparty_types: [] });
   const [page, setPage] = useState(1);
   const [detail, setDetail] = useState<any>(null);
   const [selectedClientId, setSelectedClientId] = useState<number | null>(null);
@@ -51,8 +53,10 @@ function App() {
     if (priceType) params.set('price_type', priceType);
     if (hasPhone) params.set('has_phone', hasPhone);
     if (hasEmail) params.set('has_email', hasEmail);
+    if (buyerType) params.set('buyer_type', buyerType);
+    if (counterpartyType) params.set('counterparty_type', counterpartyType);
     return params.toString();
-  }, [q, page, manager, priceType, hasPhone, hasEmail]);
+  }, [q, page, manager, priceType, hasPhone, hasEmail, buyerType, counterpartyType]);
   const load = () => api(`/clients?${query}`).then(d => { setClients(d.items); setTotal(d.total); });
 
   useEffect(() => { if (activeTab === 'registry') load(); }, [query, activeTab]);
@@ -96,7 +100,7 @@ function App() {
     </header>
     <nav className="tabs"><button className={activeTab === 'registry' ? 'selected' : ''} onClick={() => setActiveTab('registry')}>Реестр</button><button className={activeTab === 'logs' ? 'selected' : ''} onClick={() => setActiveTab('logs')}>Логи</button><button className={activeTab === 'help' ? 'selected' : ''} onClick={() => setActiveTab('help')}>Помощь</button></nav>
     {activeTab === 'help' ? <Help active={helpTab} onChange={setHelpTab} /> : activeTab === 'logs' ? <Logs items={processLogs} loading={logsLoading} onRefresh={loadLogs} /> : <>
-      <section className="toolbar filters"><input className="search" placeholder="Поиск по клиентам, email, телефонам, фирме..." value={q} onChange={e => { setQ(e.target.value); setPage(1); }} /><select aria-label="Тип цены" value={priceType} onChange={e => { setPriceType(e.target.value); setPage(1); }}><option value="">Все типы цены</option>{filterOptions.price_types.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Менеджер" value={manager} onChange={e => { setManager(e.target.value); setPage(1); }}><option value="">Все менеджеры</option>{filterOptions.managers.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Наличие телефона" value={hasPhone} onChange={e => { setHasPhone(e.target.value); setPage(1); }}><option value="">Телефон: все</option><option value="true">Телефон: есть</option><option value="false">Телефон: нет</option></select><select aria-label="Наличие Email" value={hasEmail} onChange={e => { setHasEmail(e.target.value); setPage(1); }}><option value="">Email: все</option><option value="true">Email: есть</option><option value="false">Email: нет</option></select><a className="button tonal" href={`${API_BASE_URL}/clients-export.xlsx`}>Скачать</a></section>
+      <section className="toolbar filters"><input className="search" placeholder="Поиск по клиентам, email, телефонам, фирме..." value={q} onChange={e => { setQ(e.target.value); setPage(1); }} /><select aria-label="Тип цены" value={priceType} onChange={e => { setPriceType(e.target.value); setPage(1); }}><option value="">Все типы цены</option>{filterOptions.price_types.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Менеджер" value={manager} onChange={e => { setManager(e.target.value); setPage(1); }}><option value="">Все менеджеры</option>{filterOptions.managers.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Наличие телефона" value={hasPhone} onChange={e => { setHasPhone(e.target.value); setPage(1); }}><option value="">Телефон: все</option><option value="true">Телефон: есть</option><option value="false">Телефон: нет</option></select><select aria-label="Наличие Email" value={hasEmail} onChange={e => { setHasEmail(e.target.value); setPage(1); }}><option value="">Email: все</option><option value="true">Email: есть</option><option value="false">Email: нет</option></select><select aria-label="Вид покупателя" value={buyerType} onChange={e => { setBuyerType(e.target.value); setPage(1); }}><option value="">Все виды покупателей</option>{filterOptions.buyer_types.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Вид контрагента" value={counterpartyType} onChange={e => { setCounterpartyType(e.target.value); setPage(1); }}><option value="">Все виды контрагентов</option>{filterOptions.counterparty_types.map(value => <option key={value} value={value}>{value}</option>)}</select><a className="button tonal" href={`${API_BASE_URL}/clients-export.xlsx`}>Скачать</a></section>
       {notice && <div className="notice">{notice}</div>}
       {importLog.length > 0 && <details className="import-log" open><summary>Журнал импорта</summary><pre>{importLog.join('\n')}</pre></details>}
       <div className="grid"><section className="table"><table><thead><tr><th>Наименование</th><th>Фирма</th><th>Менеджер</th><th>Телефоны</th></tr></thead><tbody>{clients.map(c => <tr key={c.id} className={[c.status === 'out_of_stock' ? 'muted-row' : '', selectedClientId === c.id ? 'selected-row' : ''].filter(Boolean).join(' ')} aria-selected={selectedClientId === c.id} onClick={() => { setSelectedClientId(c.id); api(`/clients/${c.id}`).then(setDetail); }}><td><b>{c.name}</b></td><td>{c.company}</td><td>{c.manager}</td><td>{c.phone}</td></tr>)}</tbody></table><footer><button disabled={page === 1} onClick={() => setPage(page - 1)}>Назад</button><span>{page} / {Math.ceil(total / 50) || 1} · {total} записей</span><button disabled={page * 50 >= total} onClick={() => setPage(page + 1)}>Вперед</button></footer></section>

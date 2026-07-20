@@ -33,7 +33,22 @@ def to_list_item(client: Client, last_import_at=None) -> ClientListItem:
     )
 
 
-def apply_client_filters(query, *, search=None, manager=None, company=None, price_type=None, trade_place=None, has_email=None, has_phone=None, status=None, birth_day=None, birth_month=None):
+def apply_client_filters(
+    query,
+    *,
+    search=None,
+    manager=None,
+    company=None,
+    price_type=None,
+    buyer_type=None,
+    counterparty_type=None,
+    trade_place=None,
+    has_email=None,
+    has_phone=None,
+    status=None,
+    birth_day=None,
+    birth_month=None,
+):
     if search:
         term = f"%{search.lower()}%"
         query = query.outerjoin(Email).outerjoin(Phone).outerjoin(TradePlace).where(
@@ -56,6 +71,10 @@ def apply_client_filters(query, *, search=None, manager=None, company=None, pric
         query = query.where(Client.company == company)
     if price_type:
         query = query.where(Client.price_type == price_type)
+    if buyer_type:
+        query = query.where(Client.buyer_type == buyer_type)
+    if counterparty_type:
+        query = query.where(Client.counterparty_type == counterparty_type)
     if trade_place:
         query = query.where(Client.trade_places.any(TradePlace.place == trade_place))
     if has_email is not None:
@@ -80,6 +99,8 @@ def clients(
     manager: str | None = None,
     company: str | None = None,
     price_type: str | None = None,
+    buyer_type: str | None = None,
+    counterparty_type: str | None = None,
     trade_place: str | None = None,
     has_email: bool | None = None,
     has_phone: bool | None = None,
@@ -97,6 +118,8 @@ def clients(
         manager=manager,
         company=company,
         price_type=price_type,
+        buyer_type=buyer_type,
+        counterparty_type=counterparty_type,
         trade_place=trade_place,
         has_email=has_email,
         has_phone=has_phone,
@@ -137,7 +160,21 @@ def client_filter_options(db: Session = Depends(get_db)):
     price_types = db.scalars(
         select(Client.price_type).where(Client.price_type.is_not(None), Client.price_type != "").distinct().order_by(Client.price_type)
     ).all()
-    return {"managers": managers, "price_types": price_types}
+    buyer_types = db.scalars(
+        select(Client.buyer_type).where(Client.buyer_type.is_not(None), Client.buyer_type != "").distinct().order_by(Client.buyer_type)
+    ).all()
+    counterparty_types = db.scalars(
+        select(Client.counterparty_type)
+        .where(Client.counterparty_type.is_not(None), Client.counterparty_type != "")
+        .distinct()
+        .order_by(Client.counterparty_type)
+    ).all()
+    return {
+        "managers": managers,
+        "price_types": price_types,
+        "buyer_types": buyer_types,
+        "counterparty_types": counterparty_types,
+    }
 
 
 @router.get("/clients/{client_id}", response_model=ClientDetail)
