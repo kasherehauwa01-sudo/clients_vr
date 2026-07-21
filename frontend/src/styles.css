@@ -54,7 +54,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .copy-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:stretch;margin:16px 0}
 .copy-row textarea{min-height:58px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical;background:var(--md-surface-container)}
 .copy-row button{font-size:22px;min-width:56px;border-radius:18px;background:var(--md-primary-container);color:var(--md-on-primary-container)}
-footer{display:flex;justify-content:center;gap:18px;align-items:center;padding:16px;background:var(--md-surface)}
+footer{display:flex;justify-content:center;gap:18px;align-items:center;flex-wrap:wrap;padding:16px;background:var(--md-surface)}
+.page-size{display:inline-flex;align-items:center;gap:8px;color:var(--md-muted);font-weight:800}
+.page-size select{min-width:92px;padding:8px 12px;background:var(--md-surface-container)}
 @media(max-width:1050px){main{padding:16px}
 .topbar{align-items:flex-start;flex-direction:column}
 .grid{grid-template-columns:1fr}

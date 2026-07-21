@@ -37,6 +37,7 @@ function App() {
   const [counterpartyType, setCounterpartyType] = useState('');
   const [filterOptions, setFilterOptions] = useState<FilterOptions>({ managers: [], price_types: [], buyer_types: [], counterparty_types: [] });
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState('100');
   const [detail, setDetail] = useState<any>(null);
   const [selectedClientId, setSelectedClientId] = useState<number | null>(null);
   const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
@@ -57,9 +58,9 @@ function App() {
   const query = useMemo(() => {
     const params = new URLSearchParams(filterQuery);
     params.set('page', String(page));
-    params.set('page_size', '50');
+    params.set('page_size', pageSize);
     return params.toString();
-  }, [filterQuery, page]);
+  }, [filterQuery, page, pageSize]);
   const exportUrl = `${API_BASE_URL}/clients-export.xlsx${filterQuery ? `?${filterQuery}` : ''}`;
   const load = () => api(`/clients?${query}`).then(d => { setClients(d.items); setTotal(d.total); });
   const visibleIds = useMemo(() => clients.map(client => client.id), [clients]);
@@ -76,6 +77,8 @@ function App() {
     if (selectedClientId && ids.includes(selectedClientId)) { setSelectedClientId(null); setDetail(null); }
     load();
   };
+  const pageSizeNumber = pageSize === 'all' ? Math.max(total, 1) : Number(pageSize);
+  const totalPages = pageSize === 'all' ? 1 : Math.ceil(total / pageSizeNumber) || 1;
   const resetFilters = () => { setQ(''); setPriceType(''); setBuyerType(''); setCounterpartyType(''); setManager(''); setHasPhone(''); setHasEmail(''); setPage(1); };
 
   useEffect(() => { if (activeTab === 'registry') load(); }, [query, activeTab]);
@@ -108,7 +111,7 @@ function App() {
     {activeTab === 'help' ? <Help active={helpTab} onChange={setHelpTab} /> : <>
       <section className="toolbar filters"><input className="search" placeholder="Поиск по клиентам, email, телефонам, фирме..." value={q} onChange={e => { setQ(e.target.value); setPage(1); }} /><div className="filter-row"><select aria-label="Тип цены" value={priceType} onChange={e => { setPriceType(e.target.value); setPage(1); }}><option value="">Все типы цены</option>{filterOptions.price_types.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Вид покупателя" value={buyerType} onChange={e => { setBuyerType(e.target.value); setPage(1); }}><option value="">Все виды покупателей</option>{filterOptions.buyer_types.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Вид контрагента" value={counterpartyType} onChange={e => { setCounterpartyType(e.target.value); setPage(1); }}><option value="">Все виды контрагентов</option>{filterOptions.counterparty_types.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Менеджер" value={manager} onChange={e => { setManager(e.target.value); setPage(1); }}><option value="">Все менеджеры</option>{filterOptions.managers.map(value => <option key={value} value={value}>{value}</option>)}</select><select aria-label="Наличие телефона" value={hasPhone} onChange={e => { setHasPhone(e.target.value); setPage(1); }}><option value="">Телефон: все</option><option value="true">Телефон: есть</option><option value="false">Телефон: нет</option></select><select aria-label="Наличие Email" value={hasEmail} onChange={e => { setHasEmail(e.target.value); setPage(1); }}><option value="">Email: все</option><option value="true">Email: есть</option><option value="false">Email: нет</option></select><button className="tonal" type="button" onClick={resetFilters}>Сбросить фильтры</button><a className="button tonal" href={exportUrl}>Скачать</a></div></section><div className="registry-summary"><span>В реестре: <b>{total}</b> строк</span>{checkedIds.size > 0 && <button className="danger-action" type="button" onClick={deleteCheckedClients}>Удалить выбранные ({checkedIds.size})</button>}</div>
       {notice && <div className="notice">{notice}</div>}
-      <div className="grid"><section className="table"><table><thead><tr><th className="check-cell"><input type="checkbox" aria-label="Выбрать все строки на странице" checked={allVisibleChecked} onChange={toggleVisibleCheck} /></th><th>Наименование</th><th>Фирма</th><th>Менеджер</th><th>Телефоны</th></tr></thead><tbody>{clients.map(c => <tr key={c.id} className={[c.status === 'out_of_stock' ? 'muted-row' : '', selectedClientId === c.id ? 'selected-row' : '', checkedIds.has(c.id) ? 'checked-row' : ''].filter(Boolean).join(' ')} aria-selected={selectedClientId === c.id} onClick={() => { setSelectedClientId(c.id); api(`/clients/${c.id}`).then(setDetail); }}><td className="check-cell"><input type="checkbox" aria-label={`Выбрать ${c.name}`} checked={checkedIds.has(c.id)} onClick={event => event.stopPropagation()} onChange={() => toggleClientCheck(c.id)} /></td><td><b>{c.name}</b></td><td>{c.company}</td><td>{c.manager}</td><td>{c.phone}</td></tr>)}</tbody></table><footer><button disabled={page === 1} onClick={() => setPage(page - 1)}>Назад</button><span>{page} / {Math.ceil(total / 50) || 1} · {total} записей</span><button disabled={page * 50 >= total} onClick={() => setPage(page + 1)}>Вперед</button></footer></section>
+      <div className="grid"><section className="table"><table><thead><tr><th className="check-cell"><input type="checkbox" aria-label="Выбрать все строки на странице" checked={allVisibleChecked} onChange={toggleVisibleCheck} /></th><th>Наименование</th><th>Фирма</th><th>Менеджер</th><th>Телефоны</th></tr></thead><tbody>{clients.map(c => <tr key={c.id} className={[c.status === 'out_of_stock' ? 'muted-row' : '', selectedClientId === c.id ? 'selected-row' : '', checkedIds.has(c.id) ? 'checked-row' : ''].filter(Boolean).join(' ')} aria-selected={selectedClientId === c.id} onClick={() => { setSelectedClientId(c.id); api(`/clients/${c.id}`).then(setDetail); }}><td className="check-cell"><input type="checkbox" aria-label={`Выбрать ${c.name}`} checked={checkedIds.has(c.id)} onClick={event => event.stopPropagation()} onChange={() => toggleClientCheck(c.id)} /></td><td><b>{c.name}</b></td><td>{c.company}</td><td>{c.manager}</td><td>{c.phone}</td></tr>)}</tbody></table><footer><button disabled={page === 1} onClick={() => setPage(page - 1)}>Назад</button><span>{page} / {totalPages} · {total} записей</span><label className="page-size">Строк на странице<select value={pageSize} onChange={e => { setPageSize(e.target.value); setPage(1); }}><option value="100">100</option><option value="200">200</option><option value="300">300</option><option value="400">400</option><option value="500">500</option><option value="all">Все</option></select></label><button disabled={pageSize === 'all' || page * pageSizeNumber >= total} onClick={() => setPage(page + 1)}>Вперед</button></footer></section>
         <aside>{detail ? <ClientCard c={detail} /> : <div className="card empty-state"><h2>Карточка клиента</h2><p>Выберите строку в реестре, чтобы посмотреть подробную информацию.</p></div>}</aside></div></>}
   </main>;
 }

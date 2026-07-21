@@ -94,7 +94,7 @@ def apply_client_filters(
 def clients(
     db: Session = Depends(get_db),
     page: int = 1,
-    page_size: int = 50,
+    page_size: str = "100",
     search: str | None = None,
     manager: str | None = None,
     company: str | None = None,
@@ -111,7 +111,12 @@ def clients(
     order: str = "asc",
 ):
     page = max(page, 1)
-    page_size = min(max(page_size, 1), 200)
+    show_all = page_size == "all"
+    try:
+        parsed_page_size = 100 if show_all else int(page_size)
+    except ValueError:
+        parsed_page_size = 100
+    parsed_page_size = min(max(parsed_page_size, 1), 500)
     filtered_ids = apply_client_filters(
         select(Client.id),
         search=search,
@@ -145,11 +150,15 @@ def clients(
         .outerjoin(Import, Client.last_import_id == Import.id)
         .options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places))
         .order_by(availability_order.asc(), order_by, Client.id.asc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
     )
+    if show_all:
+        page = 1
+        response_page_size = total
+    else:
+        stmt = stmt.offset((page - 1) * parsed_page_size).limit(parsed_page_size)
+        response_page_size = parsed_page_size
     items = [to_list_item(client, imported_at) for client, imported_at in db.execute(stmt).all()]
-    return PagedClients(items=items, total=total, page=page, page_size=page_size)
+    return PagedClients(items=items, total=total, page=page, page_size=response_page_size)
 
 
 @router.get("/clients-filter-options")
