@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Синий клевер">
+  <defs>
+    <linearGradient id="blueLeaf" x1="12" y1="8" x2="52" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#93c5fd"/>
+      <stop offset="0.45" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#1e3a8a"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="30%" cy="24%" r="65%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.75"/>
+      <stop offset="0.38" stop-color="#bfdbfe" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#1d4ed8" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="#dbeafe"/>
+  <g filter="url(#shadow)">
+    <path d="M32 29C25 13 9 18 11 31c1.6 10.7 14.8 10.7 21-2Z" fill="url(#blueLeaf)"/>
+    <path d="M35 32c16-7 11-23-2-21-10.7 1.6-10.7 14.8 2 21Z" fill="url(#blueLeaf)"/>
+    <path d="M32 35c7 16 23 11 21-2-1.6-10.7-14.8-10.7-21 2Z" fill="url(#blueLeaf)"/>
+    <path d="M29 32c-16 7-11 23 2 21 10.7-1.6 10.7-14.8-2-21Z" fill="url(#blueLeaf)"/>
+    <path d="M32 29C25 13 9 18 11 31c1.6 10.7 14.8 10.7 21-2Zm3 3c16-7 11-23-2-21-10.7 1.6-10.7 14.8 2 21Zm-3 3c7 16 23 11 21-2-1.6-10.7-14.8-10.7-21 2Zm-3-3c-16 7-11 23 2 21 10.7-1.6 10.7-14.8-2-21Z" fill="url(#shine)"/>
+    <circle cx="32" cy="32" r="5" fill="#eff6ff"/>
+    <path d="M36 38c6 3.5 9.4 7.6 12 13" fill="none" stroke="#1e40af" stroke-width="4.2" stroke-linecap="round"/>
+  </g>
+</svg>

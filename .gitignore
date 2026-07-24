@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+clients.db
+node_modules/
+frontend/dist/
+.env
+.DS_Store
