@@ -1,8 +1,10 @@
 from dataclasses import dataclass, field
 from io import BytesIO
 import re
+from zipfile import BadZipFile
 import xlrd
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -171,6 +173,21 @@ def _read_workbook(filename: str, content: bytes) -> WorkbookRows:
     if lower_name.endswith(".xls"):
         return _rows_from_xls(content)
     raise ValueError("Поддерживаются только .xls и .xlsx")
+
+
+def _describe_import_error(filename: str, error: Exception) -> str:
+    """Return an actionable, user-facing reason without hiding the original error."""
+    details = str(error).strip() or error.__class__.__name__
+    lower_details = details.lower()
+    if isinstance(error, (BadZipFile, InvalidFileException)) or "not a zip file" in lower_details:
+        advice = "Файл не является корректным XLSX. Пересохраните его в Excel как .xlsx или загрузите исходный .xls."
+    elif isinstance(error, xlrd.biffh.XLRDError):
+        advice = "Не удалось прочитать формат XLS. Проверьте, что файл не поврежден и действительно сохранен как Excel 97–2003 (.xls)."
+    elif "поддерживаются только" in lower_details:
+        advice = "Допустимы только файлы с расширением .xls или .xlsx."
+    else:
+        advice = "Проверьте формат данных и строку файла, указанную в сообщении, затем повторите загрузку."
+    return f"Ошибка файла «{filename}»: {details}. Что исправить: {advice}"
 
 
 def _format_preview_value(value: object) -> str:
@@ -392,7 +409,7 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
                 except Exception as exc:
                     imp.error_count += 1
                     total.errors += 1
-                    error_message = f"Строка {row_number}. Причина: {exc}"
+                    error_message = f"Файл «{filename}», строка {row_number}. Причина: {exc}. Что исправить: проверьте значения в этой строке и повторите загрузку."
                     total.logs.append(error_message)
                     _log_issue(db, imp.id, error_message, row_number=row_number, level="error")
             imp.skipped_count = max(parsed.read_rows - imp.added_count - imp.updated_count - imp.error_count, 0)
@@ -413,7 +430,7 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
         except Exception as exc:
             imp.error_count += 1
             total.errors += 1
-            message = str(exc)
+            message = _describe_import_error(filename, exc)
             total.logs.append(message)
             _log_issue(db, imp.id, message, level="error")
         db.commit()
