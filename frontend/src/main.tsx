@@ -36,7 +36,13 @@ async function api(path: string, init?: RequestInit) {
   const response = await fetch(`${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`, init);
   if (!response.ok) {
     const body = await response.text();
-    try { throw new Error(JSON.parse(body).detail || body); } catch (error) { if (error instanceof SyntaxError) throw new Error(body || `Ошибка HTTP ${response.status}`); throw error; }
+    if (response.status === 504) throw new Error('Сервис не успел ответить. Повторите попытку через несколько секунд.');
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      try { throw new Error(JSON.parse(body).detail || `Ошибка HTTP ${response.status}`); } catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+    }
+    const plainText = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    throw new Error(plainText && plainText.length < 300 ? plainText : `Ошибка HTTP ${response.status}`);
   }
   return response.json();
 }
