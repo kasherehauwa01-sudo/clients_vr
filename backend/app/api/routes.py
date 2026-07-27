@@ -241,24 +241,28 @@ def import_issues(import_id: int, db: Session = Depends(get_db)):
 @router.get("/logs")
 def logs(db: Session = Depends(get_db), limit: int = 500):
     limit = min(max(limit, 1), 2000)
-    import_issue_rows = db.execute(
-        select(ImportIssue, Import)
-        .join(Import, ImportIssue.import_id == Import.id)
-        .order_by(Import.id.desc(), ImportIssue.id.desc())
-        .limit(limit)
-    ).all()
+    # Сначала ограничиваем журнал по индексированному PK. Сортировка результата
+    # JOIN по Import.id заставляла PostgreSQL сканировать и сортировать всю
+    # историю import_issues и на больших базах приводила к nginx 504.
+    import_issues = db.scalars(select(ImportIssue).order_by(ImportIssue.id.desc()).limit(limit)).all()
+    import_ids = {issue.import_id for issue in import_issues}
+    imports_by_id = {
+        import_record.id: import_record
+        for import_record in db.scalars(select(Import).where(Import.id.in_(import_ids))).all()
+    } if import_ids else {}
     audit_rows = db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)).all()
     items = [
         {
             "id": f"import-{issue.id}",
-            "created_at": import_record.imported_at,
+            "created_at": imports_by_id[issue.import_id].imported_at,
             "source": "Импорт",
             "level": issue.level,
-            "process": import_record.file_name,
+            "process": imports_by_id[issue.import_id].file_name,
             "row_number": issue.row_number,
             "message": issue.message,
         }
-        for issue, import_record in import_issue_rows
+        for issue in import_issues
+        if issue.import_id in imports_by_id
     ]
     items.extend(
         {
