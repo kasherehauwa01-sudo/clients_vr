@@ -9,11 +9,11 @@ type HelpTab = 'features' | 'manual' | 'journal';
 type FilterOptions = { managers: string[]; price_types: string[]; buyer_types: string[]; counterparty_types: string[] };
 type LogEntry = { id: string; created_at?: string; source: string; level: string; process: string; row_number?: number; message: string };
 
-type ClientsHeaderProps = {
-  activeTab: MainTab;
-  onTabChange: (tab: MainTab) => void;
-  query: string;
-  onQueryChange: (query: string) => void;
+const formatMoscowTime = (value?: string) => {
+  if (!value) return '—';
+  const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? value : `${new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', dateStyle: 'short', timeStyle: 'medium' }).format(date)} МСК`;
 };
 
 type ClientsHeaderProps = {
@@ -178,7 +178,7 @@ function Settings({ active, onChange, onUpload, notice, uploading, logs, logsLoa
 }
 
 function UploadJournal({ logs, loading, onRefresh }: { logs: LogEntry[]; loading: boolean; onRefresh: () => void }) {
-  return <section className="upload-journal"><div className="journal-heading"><div><h3>Журнал загрузки</h3><p>События импорта, выполненные действия и ошибки обработки файлов.</p></div><button className="tonal" type="button" disabled={loading} onClick={onRefresh}>{loading ? 'Обновление…' : 'Обновить'}</button></div>{!loading && logs.length === 0 ? <p className="empty-state">Событий пока нет.</p> : <div className="journal-table"><table><thead><tr><th>Дата</th><th>Источник</th><th>Процесс</th><th>Строка</th><th>Событие</th></tr></thead><tbody>{logs.map(entry => <tr key={entry.id} className={`log-${entry.level}`}><td>{entry.created_at ? new Date(entry.created_at).toLocaleString('ru-RU') : '—'}</td><td><span className="log-level">{entry.level === 'error' ? 'Ошибка' : entry.level === 'warning' ? 'Предупреждение' : entry.source}</span></td><td>{entry.process || '—'}</td><td>{entry.row_number ?? '—'}</td><td>{entry.message || '—'}</td></tr>)}</tbody></table></div>}</section>;
+  return <section className="upload-journal"><div className="journal-heading"><div><h3>Журнал загрузки</h3><p>События импорта, выполненные действия и подробные ошибки обработки файлов. Время указано по Москве (UTC+3).</p></div><button className="tonal" type="button" disabled={loading} onClick={onRefresh}>{loading ? 'Обновление…' : 'Обновить'}</button></div>{!loading && logs.length === 0 ? <p className="empty-state">Событий пока нет.</p> : <div className="journal-table"><table><thead><tr><th>Дата (МСК)</th><th>Источник</th><th>Процесс</th><th>Строка</th><th>Описание и способ исправления</th></tr></thead><tbody>{logs.map(entry => <tr key={entry.id} className={`log-${entry.level}`}><td>{formatMoscowTime(entry.created_at)}</td><td><span className="log-level">{entry.level === 'error' ? 'Ошибка' : entry.level === 'warning' ? 'Предупреждение' : entry.source}</span></td><td>{entry.process || '—'}</td><td>{entry.row_number ?? '—'}</td><td>{entry.message || 'Описание отсутствует'}</td></tr>)}</tbody></table></div>}</section>;
 }
 function ClientCard({ c }: { c: any }) { const phones = c.phones || []; return <div className="card"><h2>{c.name}</h2><Block title="Все поля XLS" rows={[["Наименование", c.name], ["Тип цены", c.price_type], ["Менеджер", c.manager], ["Дата рождения", c.birth_date], ["Email", c.emails?.join(', ')], ["Телефоны прочие", c.raw_common_phones || phones.filter((p: any) => p.type === 'common').map((p: any) => p.phone).join(', ')], ["Места торговли", c.trade_places?.join(', ')], ["Телефоны для СМС и рассылки", c.raw_sms_phones || phones.filter((p: any) => p.type === 'sms').map((p: any) => p.phone).join(', ')], ["Руководитель", c.director], ["Фирма", c.company], ["Контактное лицо", c.contact_person], ["Источник клиента", c.client_source], ["Дата последней покупки", c.last_purchase_date], ["Вид покупателя", c.buyer_type], ["Вид контрагента", c.counterparty_type]]} /></div>; }
 function Block({ title, rows }: any) { return <section><h3>{title}</h3>{rows.map((r: any) => <p key={r[0]}><b>{r[0]}:</b> {r[1] || '—'}</p>)}</section>; }
