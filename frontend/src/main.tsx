@@ -16,6 +16,13 @@ type ClientsHeaderProps = {
   onQueryChange: (query: string) => void;
 };
 
+type ClientsHeaderProps = {
+  activeTab: MainTab;
+  onTabChange: (tab: MainTab) => void;
+  query: string;
+  onQueryChange: (query: string) => void;
+};
+
 const STATUS_LABELS: Record<ClientStatus, string> = {
   active: 'Активный',
   archived: 'Архивный',
