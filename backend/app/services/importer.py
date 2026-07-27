@@ -2,7 +2,11 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from io import BytesIO
 import logging
+from pathlib import Path
 import re
+import shutil
+import subprocess
+from tempfile import TemporaryDirectory
 from xml.etree import ElementTree
 from zipfile import BadZipFile
 import xlrd
@@ -277,12 +281,49 @@ def _rows_from_legacy_document(content: bytes) -> WorkbookRows:
     raise ValueError("Содержимое файла не является XLS, SpreadsheetML XML, HTML-таблицей или табличным текстом")
 
 
+def _rows_from_xls_via_libreoffice(content: bytes) -> WorkbookRows:
+    """Convert an Excel-readable but malformed XLS to XLSX before parsing it."""
+    executable = shutil.which("libreoffice") or shutil.which("soffice")
+    if not executable:
+        raise RuntimeError("LibreOffice не установлен")
+    with TemporaryDirectory(prefix="clients-xls-") as directory:
+        workdir = Path(directory)
+        source = workdir / "import.xls"
+        source.write_bytes(content)
+        profile = workdir / "profile"
+        process = subprocess.run(
+            [
+                executable,
+                "--headless",
+                "--convert-to",
+                "xlsx",
+                "--outdir",
+                str(workdir),
+                f"-env:UserInstallation={profile.as_uri()}",
+                str(source),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        converted = workdir / "import.xlsx"
+        if process.returncode != 0 or not converted.is_file():
+            output = (process.stderr or process.stdout).strip()
+            raise ValueError(f"LibreOffice не смог преобразовать XLS{f': {output}' if output else ''}")
+        result = _rows_from_xlsx(converted.read_bytes())
+        result.file_format = "xls → xlsx"
+        result.parser = "libreoffice"
+        return result
+
+
 def _rows_from_xls(content: bytes) -> WorkbookRows:
     attempts: list[tuple[str, Exception]] = []
     for parser_name, log_name, parser in (
         ("xlrd", "xlrd", _rows_from_xls_xlrd),
         ("calamine", "python-calamine", _rows_from_xls_calamine),
         ("legacy", "legacy parser", _rows_from_legacy_document),
+        ("libreoffice", "LibreOffice → XLSX", _rows_from_xls_via_libreoffice),
     ):
         try:
             result = parser(content)
@@ -297,7 +338,7 @@ def _rows_from_xls(content: bytes) -> WorkbookRows:
         " | ".join(f"{name}: {error.__class__.__name__}: {error}" for name, error in attempts),
     )
     raise ValueError(
-        "Не удалось определить формат XLS. Проверены: xlrd, python-calamine, legacy parser. "
+        "Не удалось определить формат XLS. Проверены: xlrd, python-calamine, legacy parser и конвертация в XLSX. "
         "Проверьте файл или сохраните его заново в Excel."
     )
 
