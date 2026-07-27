@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from io import BytesIO
 import re
+from xml.etree import ElementTree
 from zipfile import BadZipFile
 import xlrd
 from openpyxl import load_workbook
@@ -104,6 +106,37 @@ class ParsedRows:
     read_rows: int = 0
 
 
+class _HtmlTableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[list[object]] = []
+        self._row: list[object] | None = None
+        self._cell_parts: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag == "tr":
+            self._row = []
+        elif tag in {"td", "th"} and self._row is not None:
+            self._cell_parts = []
+        elif tag == "br" and self._cell_parts is not None:
+            self._cell_parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._cell_parts is not None:
+            self._cell_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in {"td", "th"} and self._row is not None and self._cell_parts is not None:
+            self._row.append("".join(self._cell_parts).strip())
+            self._cell_parts = None
+        elif tag == "tr" and self._row is not None:
+            if self._row:
+                self.rows.append(self._row)
+            self._row = None
+
+
 class ImportSummary(BaseModel):
     files: int = 0
     rows: int = 0
@@ -188,7 +221,63 @@ def _rows_from_xls_calamine(content: bytes) -> WorkbookRows:
     return WorkbookRows(rows=repaired_rows, file_format="xls (совместимый режим)", sheet_count=len(workbook.sheet_names), sheet_name=sheet.name, repaired_cells=repaired_cells)
 
 
+def _decode_legacy_document(content: bytes) -> str:
+    encodings = ("utf-16", "utf-8-sig", "cp1251") if content.startswith((b"\xff\xfe", b"\xfe\xff")) else ("utf-8-sig", "cp1251", "utf-16")
+    for encoding in encodings:
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("Не удалось определить кодировку табличного документа")
+
+
+def _rows_from_spreadsheet_xml(text: str) -> WorkbookRows:
+    root = ElementTree.fromstring(text)
+    namespace = "{urn:schemas-microsoft-com:office:spreadsheet}"
+    worksheets = root.findall(f".//{namespace}Worksheet")
+    if not worksheets:
+        raise ValueError("В XML-таблице отсутствуют листы")
+    worksheet = worksheets[0]
+    rows: list[list[object]] = []
+    for row_element in worksheet.findall(f".//{namespace}Row"):
+        row: list[object] = []
+        for cell in row_element.findall(f"{namespace}Cell"):
+            index = cell.get(f"{namespace}Index")
+            if index:
+                row.extend([None] * max(int(index) - len(row) - 1, 0))
+            data = cell.find(f"{namespace}Data")
+            row.append(data.text if data is not None and data.text is not None else None)
+        rows.append(row)
+    sheet_name = worksheet.get(f"{namespace}Name") or "Лист 1"
+    return WorkbookRows(rows=rows, file_format="xls (XML из 1С)", sheet_count=len(worksheets), sheet_name=sheet_name)
+
+
+def _rows_from_html_table(text: str) -> WorkbookRows:
+    parser = _HtmlTableParser()
+    parser.feed(text)
+    if not parser.rows:
+        raise ValueError("В HTML-документе отсутствует таблица")
+    return WorkbookRows(rows=parser.rows, file_format="xls (HTML из 1С)", sheet_count=1, sheet_name="Лист 1")
+
+
+def _rows_from_legacy_document(content: bytes) -> WorkbookRows:
+    text = _decode_legacy_document(content)
+    normalized = text.lstrip().lower()
+    if normalized.startswith("<?xml") or "urn:schemas-microsoft-com:office:spreadsheet" in normalized[:4000]:
+        return _rows_from_spreadsheet_xml(text)
+    if "<html" in normalized[:2000] or "<table" in normalized[:4000]:
+        return _rows_from_html_table(text)
+    if "\t" in text:
+        rows = [[cell.strip() for cell in line.split("\t")] for line in text.splitlines() if line.strip()]
+        return WorkbookRows(rows=rows, file_format="xls (текстовая выгрузка из 1С)", sheet_count=1, sheet_name="Лист 1")
+    raise ValueError("Содержимое файла не является XLS, SpreadsheetML XML, HTML-таблицей или табличным текстом")
+
+
 def _rows_from_xls(content: bytes) -> WorkbookRows:
+    # 1С может выдавать SpreadsheetML XML или HTML-таблицу с расширением .xls.
+    # Такие файлы корректно открываются Excel, но не распознаются XLS-движками.
+    if not content.startswith(b"\xd0\xcf\x11\xe0"):
+        return _rows_from_legacy_document(content)
     try:
         return _rows_from_xls_xlrd(content)
     except (AssertionError, xlrd.biffh.XLRDError):
