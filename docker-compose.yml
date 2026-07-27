@@ -6,6 +6,7 @@ services:
       CLIENTS_DATABASE_URL: postgresql+psycopg://clients:clients@postgres:5432/clients
       CLIENTS_PUBLIC_BASE_PATH: /vr/clients
       CLIENTS_AUTO_CREATE_TABLES: "false"
+      TZ: Europe/Moscow
     depends_on:
       postgres:
         condition: service_healthy
