@@ -3,8 +3,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
+from starlette.concurrency import run_in_threadpool
 import xlsxwriter
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.entities import AuditLog, Client, ClientStatus, Email, Import, ImportIssue, Phone, TradePlace
 from app.schemas.client import BulkUpdate, ClientDetail, ClientListItem, PagedClients
 from app.services.importer import import_files
@@ -220,9 +221,16 @@ def client_detail(client_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/imports")
-async def upload_import(files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
+async def upload_import(files: list[UploadFile] = File(...)):
     payload = [(file.filename or "import.xlsx", await file.read()) for file in files]
-    summary = import_files(db, payload)
+    # Разбор больших XLS и запись тысяч клиентов — синхронная CPU/DB-работа.
+    # Выполнение её в async endpoint блокировало event loop Uvicorn: nginx не
+    # получал ответ и возвращал 504, а параллельно нельзя было открыть журнал.
+    def run_import():
+        with SessionLocal() as db:
+            return import_files(db, payload)
+
+    summary = await run_in_threadpool(run_import)
     return {"message": "Импорт завершен", **summary.model_dump()}
 
 
@@ -241,24 +249,28 @@ def import_issues(import_id: int, db: Session = Depends(get_db)):
 @router.get("/logs")
 def logs(db: Session = Depends(get_db), limit: int = 500):
     limit = min(max(limit, 1), 2000)
-    import_issue_rows = db.execute(
-        select(ImportIssue, Import)
-        .join(Import, ImportIssue.import_id == Import.id)
-        .order_by(Import.id.desc(), ImportIssue.id.desc())
-        .limit(limit)
-    ).all()
+    # Сначала ограничиваем журнал по индексированному PK. Сортировка результата
+    # JOIN по Import.id заставляла PostgreSQL сканировать и сортировать всю
+    # историю import_issues и на больших базах приводила к nginx 504.
+    import_issues = db.scalars(select(ImportIssue).order_by(ImportIssue.id.desc()).limit(limit)).all()
+    import_ids = {issue.import_id for issue in import_issues}
+    imports_by_id = {
+        import_record.id: import_record
+        for import_record in db.scalars(select(Import).where(Import.id.in_(import_ids))).all()
+    } if import_ids else {}
     audit_rows = db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)).all()
     items = [
         {
             "id": f"import-{issue.id}",
-            "created_at": import_record.imported_at,
+            "created_at": imports_by_id[issue.import_id].imported_at,
             "source": "Импорт",
             "level": issue.level,
-            "process": import_record.file_name,
+            "process": imports_by_id[issue.import_id].file_name,
             "row_number": issue.row_number,
             "message": issue.message,
         }
-        for issue, import_record in import_issue_rows
+        for issue in import_issues
+        if issue.import_id in imports_by_id
     ]
     items.extend(
         {
