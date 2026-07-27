@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from io import BytesIO
+import logging
 import re
 from xml.etree import ElementTree
 from zipfile import BadZipFile
@@ -13,6 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Phone, PhoneType, TradePlace
 from app.services.normalization import clean_multiline_text, clean_text, extract_phones, normalize_email, parse_date, repair_legacy_excel_text, split_values
+
+logger = logging.getLogger(__name__)
 
 COLUMN_ORDER = [
     "name",
@@ -96,6 +99,7 @@ class WorkbookRows:
     sheet_count: int
     sheet_name: str
     repaired_cells: int = 0
+    parser: str = "unknown"
 
 
 @dataclass
@@ -175,7 +179,7 @@ def _detect_header(rows: list[list[object]]) -> tuple[int | None, dict[int, str]
 def _rows_from_xlsx(content: bytes) -> WorkbookRows:
     workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
     sheet = workbook[workbook.sheetnames[0]]
-    return WorkbookRows(rows=[list(row) for row in sheet.iter_rows(values_only=True)], file_format="xlsx", sheet_count=len(workbook.sheetnames), sheet_name=sheet.title)
+    return WorkbookRows(rows=[list(row) for row in sheet.iter_rows(values_only=True)], file_format="xlsx", sheet_count=len(workbook.sheetnames), sheet_name=sheet.title, parser="openpyxl")
 
 
 def _rows_from_xls_xlrd(content: bytes) -> WorkbookRows:
@@ -199,7 +203,106 @@ def _rows_from_xls_xlrd(content: bytes) -> WorkbookRows:
                 repaired_cells += int(value != cell.value)
                 values.append(value)
         rows.append(values)
-    return WorkbookRows(rows=rows, file_format="xls", sheet_count=book.nsheets, sheet_name=sheet.name, repaired_cells=repaired_cells)
+    return WorkbookRows(rows=rows, file_format="xls", sheet_count=book.nsheets, sheet_name=sheet.name, repaired_cells=repaired_cells, parser="xlrd")
+
+
+def _rows_from_xls_calamine(content: bytes) -> WorkbookRows:
+    """Read non-standard 1C exports with an independent, tolerant XLS engine."""
+    workbook = CalamineWorkbook.from_filelike(BytesIO(content))
+    if not workbook.sheet_names:
+        raise ValueError("В XLS-файле отсутствуют листы")
+    sheet = workbook.get_sheet_by_index(0)
+    rows = sheet.to_python(skip_empty_area=False)
+    repaired_rows: list[list[object]] = []
+    repaired_cells = 0
+    for row in rows:
+        repaired_row: list[object] = []
+        for cell in row:
+            value = repair_legacy_excel_text(cell)
+            repaired_cells += int(value != cell)
+            repaired_row.append(value)
+        repaired_rows.append(repaired_row)
+    return WorkbookRows(rows=repaired_rows, file_format="xls (совместимый режим)", sheet_count=len(workbook.sheet_names), sheet_name=sheet.name, repaired_cells=repaired_cells, parser="calamine")
+
+
+def _decode_legacy_document(content: bytes) -> str:
+    encodings = ("utf-16", "utf-8-sig", "cp1251") if content.startswith((b"\xff\xfe", b"\xfe\xff")) else ("utf-8-sig", "cp1251", "utf-16")
+    for encoding in encodings:
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("Не удалось определить кодировку табличного документа")
+
+
+def _rows_from_spreadsheet_xml(text: str) -> WorkbookRows:
+    root = ElementTree.fromstring(text)
+    namespace = "{urn:schemas-microsoft-com:office:spreadsheet}"
+    worksheets = root.findall(f".//{namespace}Worksheet")
+    if not worksheets:
+        raise ValueError("В XML-таблице отсутствуют листы")
+    worksheet = worksheets[0]
+    rows: list[list[object]] = []
+    for row_element in worksheet.findall(f".//{namespace}Row"):
+        row: list[object] = []
+        for cell in row_element.findall(f"{namespace}Cell"):
+            index = cell.get(f"{namespace}Index")
+            if index:
+                row.extend([None] * max(int(index) - len(row) - 1, 0))
+            data = cell.find(f"{namespace}Data")
+            row.append(data.text if data is not None and data.text is not None else None)
+        rows.append(row)
+    sheet_name = worksheet.get(f"{namespace}Name") or "Лист 1"
+    return WorkbookRows(rows=rows, file_format="xls (XML из 1С)", sheet_count=len(worksheets), sheet_name=sheet_name, parser="legacy")
+
+
+def _rows_from_html_table(text: str) -> WorkbookRows:
+    parser = _HtmlTableParser()
+    parser.feed(text)
+    if not parser.rows:
+        raise ValueError("В HTML-документе отсутствует таблица")
+    return WorkbookRows(rows=parser.rows, file_format="xls (HTML из 1С)", sheet_count=1, sheet_name="Лист 1", parser="legacy")
+
+
+def _rows_from_legacy_document(content: bytes) -> WorkbookRows:
+    text = _decode_legacy_document(content)
+    normalized = text.lstrip().lower()
+    if normalized.startswith("<?xml") or "urn:schemas-microsoft-com:office:spreadsheet" in normalized[:4000]:
+        return _rows_from_spreadsheet_xml(text)
+    if "<html" in normalized[:2000] or "<table" in normalized[:4000]:
+        return _rows_from_html_table(text)
+    if "\t" in text:
+        rows = [[cell.strip() for cell in line.split("\t")] for line in text.splitlines() if line.strip()]
+        return WorkbookRows(rows=rows, file_format="xls (текстовая выгрузка из 1С)", sheet_count=1, sheet_name="Лист 1", parser="legacy")
+    raise ValueError("Содержимое файла не является XLS, SpreadsheetML XML, HTML-таблицей или табличным текстом")
+
+
+def _rows_from_xls(content: bytes) -> WorkbookRows:
+    attempts: list[tuple[str, Exception]] = []
+    for parser_name, parser in (
+        ("xlrd", _rows_from_xls_xlrd),
+        ("calamine", _rows_from_xls_calamine),
+        ("legacy", _rows_from_legacy_document),
+    ):
+        try:
+            result = parser(content)
+            logger.info("XLS parser succeeded: %s", parser_name)
+            return result
+        except Exception as error:
+            attempts.append((parser_name, error))
+            logger.warning("XLS parser failed: %s (%s: %s)", parser_name, error.__class__.__name__, error)
+
+    def diagnostic(name: str, error: Exception) -> str:
+        details = str(error).strip()
+        if name == "calamine" and "detect file format" in details.lower():
+            details = "формат не распознан"
+        return f"{name}: {error.__class__.__name__}{f' ({details})' if details else ''}"
+
+    diagnostics = "; ".join(diagnostic(name, error) for name, error in attempts)
+    raise ValueError(
+        "Не удалось определить внутренний формат XLS. Проверьте файл или сохраните его заново в Excel. "
+        f"Диагностика попыток: {diagnostics}"
+    )
 
 
 def _rows_from_xls_calamine(content: bytes) -> WorkbookRows:
@@ -345,6 +448,7 @@ def _read_rows(filename: str, content: bytes) -> ParsedRows:
     logs = [
         f"Файл: {filename}",
         f"Формат: {workbook_rows.file_format}",
+        f"Парсер: {workbook_rows.parser}",
         f"Листов: {workbook_rows.sheet_count}",
         f"Лист: {workbook_rows.sheet_name}",
         f"Строк: {len(raw_rows)}",
