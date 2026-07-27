@@ -5,6 +5,7 @@ from zipfile import BadZipFile
 import xlrd
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
+from python_calamine import CalamineWorkbook
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -144,7 +145,7 @@ def _rows_from_xlsx(content: bytes) -> WorkbookRows:
     return WorkbookRows(rows=[list(row) for row in sheet.iter_rows(values_only=True)], file_format="xlsx", sheet_count=len(workbook.sheetnames), sheet_name=sheet.title)
 
 
-def _rows_from_xls(content: bytes) -> WorkbookRows:
+def _rows_from_xls_xlrd(content: bytes) -> WorkbookRows:
     # Выгрузки из 1С нередко содержат некритичные нарушения OLE-контейнера.
     # xlrd без этого флага завершает чтение таких валидных таблиц через AssertionError.
     book = xlrd.open_workbook(file_contents=content, ignore_workbook_corruption=True)
@@ -166,6 +167,34 @@ def _rows_from_xls(content: bytes) -> WorkbookRows:
                 values.append(value)
         rows.append(values)
     return WorkbookRows(rows=rows, file_format="xls", sheet_count=book.nsheets, sheet_name=sheet.name, repaired_cells=repaired_cells)
+
+
+def _rows_from_xls_calamine(content: bytes) -> WorkbookRows:
+    """Read non-standard 1C exports with an independent, tolerant XLS engine."""
+    workbook = CalamineWorkbook.from_filelike(BytesIO(content))
+    if not workbook.sheet_names:
+        raise ValueError("В XLS-файле отсутствуют листы")
+    sheet = workbook.get_sheet_by_index(0)
+    rows = sheet.to_python(skip_empty_area=False)
+    repaired_rows: list[list[object]] = []
+    repaired_cells = 0
+    for row in rows:
+        repaired_row: list[object] = []
+        for cell in row:
+            value = repair_legacy_excel_text(cell)
+            repaired_cells += int(value != cell)
+            repaired_row.append(value)
+        repaired_rows.append(repaired_row)
+    return WorkbookRows(rows=repaired_rows, file_format="xls (совместимый режим)", sheet_count=len(workbook.sheet_names), sheet_name=sheet.name, repaired_cells=repaired_cells)
+
+
+def _rows_from_xls(content: bytes) -> WorkbookRows:
+    try:
+        return _rows_from_xls_xlrd(content)
+    except (AssertionError, xlrd.biffh.XLRDError):
+        # Некоторые выгрузки 1С нарушают внутренние ожидания xlrd, хотя Excel
+        # открывает их. В этом случае повторяем чтение независимым движком.
+        return _rows_from_xls_calamine(content)
 
 
 def _read_workbook(filename: str, content: bytes) -> WorkbookRows:
