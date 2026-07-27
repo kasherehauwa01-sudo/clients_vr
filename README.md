@@ -93,6 +93,10 @@ location /vr/clients/ {
     proxy_set_header X-Forwarded-Prefix /vr/clients;
     proxy_redirect off;
     client_max_body_size 100m;
+    proxy_connect_timeout 30s;
+    proxy_send_timeout 600s;
+    proxy_read_timeout 600s;
+    send_timeout 600s;
 }
 
 location = /vr/clients {

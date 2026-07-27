@@ -3,8 +3,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
+from starlette.concurrency import run_in_threadpool
 import xlsxwriter
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.entities import AuditLog, Client, ClientStatus, Email, Import, ImportIssue, Phone, TradePlace
 from app.schemas.client import BulkUpdate, ClientDetail, ClientListItem, PagedClients
 from app.services.importer import import_files
@@ -220,9 +221,16 @@ def client_detail(client_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/imports")
-async def upload_import(files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
+async def upload_import(files: list[UploadFile] = File(...)):
     payload = [(file.filename or "import.xlsx", await file.read()) for file in files]
-    summary = import_files(db, payload)
+    # Разбор больших XLS и запись тысяч клиентов — синхронная CPU/DB-работа.
+    # Выполнение её в async endpoint блокировало event loop Uvicorn: nginx не
+    # получал ответ и возвращал 504, а параллельно нельзя было открыть журнал.
+    def run_import():
+        with SessionLocal() as db:
+            return import_files(db, payload)
+
+    summary = await run_in_threadpool(run_import)
     return {"message": "Импорт завершен", **summary.model_dump()}
 
 
