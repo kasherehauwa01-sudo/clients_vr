@@ -145,7 +145,9 @@ def _rows_from_xlsx(content: bytes) -> WorkbookRows:
 
 
 def _rows_from_xls(content: bytes) -> WorkbookRows:
-    book = xlrd.open_workbook(file_contents=content)
+    # Выгрузки из 1С нередко содержат некритичные нарушения OLE-контейнера.
+    # xlrd без этого флага завершает чтение таких валидных таблиц через AssertionError.
+    book = xlrd.open_workbook(file_contents=content, ignore_workbook_corruption=True)
     sheet = book.sheet_by_index(0)
     rows: list[list[object]] = []
     repaired_cells = 0
@@ -183,6 +185,8 @@ def _describe_import_error(filename: str, error: Exception) -> str:
         advice = "Файл не является корректным XLSX. Пересохраните его в Excel как .xlsx или загрузите исходный .xls."
     elif isinstance(error, xlrd.biffh.XLRDError):
         advice = "Не удалось прочитать формат XLS. Проверьте, что файл не поврежден и действительно сохранен как Excel 97–2003 (.xls)."
+    elif isinstance(error, AssertionError):
+        advice = "Внутренняя структура XLS повреждена. Откройте файл в Excel или LibreOffice, выберите «Сохранить как» и сохраните заново в формате .xlsx."
     elif "поддерживаются только" in lower_details:
         advice = "Допустимы только файлы с расширением .xls или .xlsx."
     else:
