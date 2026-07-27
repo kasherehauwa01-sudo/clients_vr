@@ -1,8 +1,11 @@
 from dataclasses import dataclass, field
 from io import BytesIO
 import re
+from zipfile import BadZipFile
 import xlrd
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
+from python_calamine import CalamineWorkbook
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -142,8 +145,10 @@ def _rows_from_xlsx(content: bytes) -> WorkbookRows:
     return WorkbookRows(rows=[list(row) for row in sheet.iter_rows(values_only=True)], file_format="xlsx", sheet_count=len(workbook.sheetnames), sheet_name=sheet.title)
 
 
-def _rows_from_xls(content: bytes) -> WorkbookRows:
-    book = xlrd.open_workbook(file_contents=content)
+def _rows_from_xls_xlrd(content: bytes) -> WorkbookRows:
+    # Выгрузки из 1С нередко содержат некритичные нарушения OLE-контейнера.
+    # xlrd без этого флага завершает чтение таких валидных таблиц через AssertionError.
+    book = xlrd.open_workbook(file_contents=content, ignore_workbook_corruption=True)
     sheet = book.sheet_by_index(0)
     rows: list[list[object]] = []
     repaired_cells = 0
@@ -164,6 +169,34 @@ def _rows_from_xls(content: bytes) -> WorkbookRows:
     return WorkbookRows(rows=rows, file_format="xls", sheet_count=book.nsheets, sheet_name=sheet.name, repaired_cells=repaired_cells)
 
 
+def _rows_from_xls_calamine(content: bytes) -> WorkbookRows:
+    """Read non-standard 1C exports with an independent, tolerant XLS engine."""
+    workbook = CalamineWorkbook.from_filelike(BytesIO(content))
+    if not workbook.sheet_names:
+        raise ValueError("В XLS-файле отсутствуют листы")
+    sheet = workbook.get_sheet_by_index(0)
+    rows = sheet.to_python(skip_empty_area=False)
+    repaired_rows: list[list[object]] = []
+    repaired_cells = 0
+    for row in rows:
+        repaired_row: list[object] = []
+        for cell in row:
+            value = repair_legacy_excel_text(cell)
+            repaired_cells += int(value != cell)
+            repaired_row.append(value)
+        repaired_rows.append(repaired_row)
+    return WorkbookRows(rows=repaired_rows, file_format="xls (совместимый режим)", sheet_count=len(workbook.sheet_names), sheet_name=sheet.name, repaired_cells=repaired_cells)
+
+
+def _rows_from_xls(content: bytes) -> WorkbookRows:
+    try:
+        return _rows_from_xls_xlrd(content)
+    except (AssertionError, xlrd.biffh.XLRDError):
+        # Некоторые выгрузки 1С нарушают внутренние ожидания xlrd, хотя Excel
+        # открывает их. В этом случае повторяем чтение независимым движком.
+        return _rows_from_xls_calamine(content)
+
+
 def _read_workbook(filename: str, content: bytes) -> WorkbookRows:
     lower_name = filename.lower()
     if lower_name.endswith(".xlsx"):
@@ -171,6 +204,23 @@ def _read_workbook(filename: str, content: bytes) -> WorkbookRows:
     if lower_name.endswith(".xls"):
         return _rows_from_xls(content)
     raise ValueError("Поддерживаются только .xls и .xlsx")
+
+
+def _describe_import_error(filename: str, error: Exception) -> str:
+    """Return an actionable, user-facing reason without hiding the original error."""
+    details = str(error).strip() or error.__class__.__name__
+    lower_details = details.lower()
+    if isinstance(error, (BadZipFile, InvalidFileException)) or "not a zip file" in lower_details:
+        advice = "Файл не является корректным XLSX. Пересохраните его в Excel как .xlsx или загрузите исходный .xls."
+    elif isinstance(error, xlrd.biffh.XLRDError):
+        advice = "Не удалось прочитать формат XLS. Проверьте, что файл не поврежден и действительно сохранен как Excel 97–2003 (.xls)."
+    elif isinstance(error, AssertionError):
+        advice = "Внутренняя структура XLS повреждена. Откройте файл в Excel или LibreOffice, выберите «Сохранить как» и сохраните заново в формате .xlsx."
+    elif "поддерживаются только" in lower_details:
+        advice = "Допустимы только файлы с расширением .xls или .xlsx."
+    else:
+        advice = "Проверьте формат данных и строку файла, указанную в сообщении, затем повторите загрузку."
+    return f"Ошибка файла «{filename}»: {details}. Что исправить: {advice}"
 
 
 def _format_preview_value(value: object) -> str:
@@ -392,7 +442,7 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
                 except Exception as exc:
                     imp.error_count += 1
                     total.errors += 1
-                    error_message = f"Строка {row_number}. Причина: {exc}"
+                    error_message = f"Файл «{filename}», строка {row_number}. Причина: {exc}. Что исправить: проверьте значения в этой строке и повторите загрузку."
                     total.logs.append(error_message)
                     _log_issue(db, imp.id, error_message, row_number=row_number, level="error")
             imp.skipped_count = max(parsed.read_rows - imp.added_count - imp.updated_count - imp.error_count, 0)
@@ -413,7 +463,7 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
         except Exception as exc:
             imp.error_count += 1
             total.errors += 1
-            message = str(exc)
+            message = _describe_import_error(filename, exc)
             total.logs.append(message)
             _log_issue(db, imp.id, message, level="error")
         db.commit()
