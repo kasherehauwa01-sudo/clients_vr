@@ -329,7 +329,20 @@ def bulk_update(payload: BulkUpdate, db: Session = Depends(get_db)):
 
 
 @router.delete("/clients")
-def bulk_delete(ids: str, db: Session = Depends(get_db)):
+def bulk_delete(
+    ids: str | None = None,
+    delete_all: bool = Query(False, alias="all"),
+    db: Session = Depends(get_db),
+):
+    if delete_all:
+        # Связанные телефоны, email и места торговли удаляются на уровне БД
+        # благодаря внешним ключам с ON DELETE CASCADE.
+        deleted = db.execute(delete(Client)).rowcount or 0
+        db.add(AuditLog(action="delete_all_clients", payload=f"Удалено клиентов: {deleted}"))
+        db.commit()
+        return {"deleted": deleted}
+    if not ids:
+        raise HTTPException(status_code=400, detail="Не переданы строки для удаления")
     id_list = [int(value) for value in ids.split(",") if value.strip()]
     clients_to_delete = db.scalars(select(Client).where(Client.id.in_(id_list))).all()
     for client in clients_to_delete:
