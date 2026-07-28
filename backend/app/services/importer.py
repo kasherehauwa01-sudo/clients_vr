@@ -1,18 +1,13 @@
 from dataclasses import dataclass, field
-from html.parser import HTMLParser
-from io import BytesIO
 import logging
 from pathlib import Path
 import re
-import shutil
-import subprocess
 from tempfile import TemporaryDirectory
-from xml.etree import ElementTree
 from zipfile import BadZipFile
+import magic
 import xlrd
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
-from python_calamine import CalamineWorkbook
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -114,37 +109,6 @@ class ParsedRows:
     read_rows: int = 0
 
 
-class _HtmlTableParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.rows: list[list[object]] = []
-        self._row: list[object] | None = None
-        self._cell_parts: list[str] | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        tag = tag.lower()
-        if tag == "tr":
-            self._row = []
-        elif tag in {"td", "th"} and self._row is not None:
-            self._cell_parts = []
-        elif tag == "br" and self._cell_parts is not None:
-            self._cell_parts.append("\n")
-
-    def handle_data(self, data: str) -> None:
-        if self._cell_parts is not None:
-            self._cell_parts.append(data)
-
-    def handle_endtag(self, tag: str) -> None:
-        tag = tag.lower()
-        if tag in {"td", "th"} and self._row is not None and self._cell_parts is not None:
-            self._row.append("".join(self._cell_parts).strip())
-            self._cell_parts = None
-        elif tag == "tr" and self._row is not None:
-            if self._row:
-                self.rows.append(self._row)
-            self._row = None
-
-
 class ImportSummary(BaseModel):
     files: int = 0
     rows: int = 0
@@ -180,17 +144,32 @@ def _detect_header(rows: list[list[object]]) -> tuple[int | None, dict[int, str]
     return (best_index, best_mapping) if len(best_mapping) >= 2 else (None, {})
 
 
-def _rows_from_xlsx(content: bytes) -> WorkbookRows:
-    workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
-    sheet = workbook[workbook.sheetnames[0]]
-    return WorkbookRows(rows=[list(row) for row in sheet.iter_rows(values_only=True)], file_format="xlsx", sheet_count=len(workbook.sheetnames), sheet_name=sheet.title, parser="openpyxl")
+OLE_SIGNATURE = bytes.fromhex("D0 CF 11 E0 A1 B1 1A E1")
+ZIP_SIGNATURE = b"PK"
 
 
-def _rows_from_xls_xlrd(content: bytes) -> WorkbookRows:
-    # Выгрузки из 1С нередко содержат некритичные нарушения OLE-контейнера.
-    # xlrd без этого флага завершает чтение таких валидных таблиц через AssertionError.
-    book = xlrd.open_workbook(file_contents=content, ignore_workbook_corruption=True)
+def _rows_from_xlsx(path: Path) -> WorkbookRows:
+    # Передаём поток, чтобы openpyxl также корректно читал XLSX с ошибочным
+    # расширением .xls: формат уже надёжно определён по ZIP-сигнатуре.
+    with path.open("rb") as source:
+        workbook = load_workbook(source, read_only=True, data_only=True)
+        sheet = workbook[workbook.sheetnames[0]]
+        rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+        sheet_names = list(workbook.sheetnames)
+        logger.info(
+            "XLSX открыт через openpyxl: листов=%s, названия=%s, строк=%s, столбцов=%s",
+            len(sheet_names), sheet_names, sheet.max_row, sheet.max_column,
+        )
+        return WorkbookRows(rows=rows, file_format="xlsx", sheet_count=len(sheet_names), sheet_name=sheet.title, parser="openpyxl")
+
+
+def _rows_from_xls_xlrd(path: Path) -> WorkbookRows:
+    book = xlrd.open_workbook(str(path))
     sheet = book.sheet_by_index(0)
+    logger.info(
+        "XLS открыт через xlrd: листов=%s, названия=%s, строк=%s, столбцов=%s",
+        book.nsheets, book.sheet_names(), sheet.nrows, sheet.ncols,
+    )
     rows: list[list[object]] = []
     repaired_cells = 0
     for row_index in range(sheet.nrows):
@@ -210,146 +189,47 @@ def _rows_from_xls_xlrd(content: bytes) -> WorkbookRows:
     return WorkbookRows(rows=rows, file_format="xls", sheet_count=book.nsheets, sheet_name=sheet.name, repaired_cells=repaired_cells, parser="xlrd")
 
 
-def _rows_from_xls_calamine(content: bytes) -> WorkbookRows:
-    """Read non-standard 1C exports with an independent, tolerant XLS engine."""
-    workbook = CalamineWorkbook.from_filelike(BytesIO(content))
-    if not workbook.sheet_names:
-        raise ValueError("В XLS-файле отсутствуют листы")
-    sheet = workbook.get_sheet_by_index(0)
-    rows = sheet.to_python(skip_empty_area=False)
-    repaired_rows: list[list[object]] = []
-    repaired_cells = 0
-    for row in rows:
-        repaired_row: list[object] = []
-        for cell in row:
-            value = repair_legacy_excel_text(cell)
-            repaired_cells += int(value != cell)
-            repaired_row.append(value)
-        repaired_rows.append(repaired_row)
-    return WorkbookRows(rows=repaired_rows, file_format="xls (совместимый режим)", sheet_count=len(workbook.sheet_names), sheet_name=sheet.name, repaired_cells=repaired_cells, parser="calamine")
-
-
-def _decode_legacy_document(content: bytes) -> str:
-    encodings = ("utf-16", "utf-8-sig", "cp1251") if content.startswith((b"\xff\xfe", b"\xfe\xff")) else ("utf-8-sig", "cp1251", "utf-16")
-    for encoding in encodings:
-        try:
-            return content.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    raise ValueError("Не удалось определить кодировку табличного документа")
-
-
-def _rows_from_spreadsheet_xml(text: str) -> WorkbookRows:
-    root = ElementTree.fromstring(text)
-    namespace = "{urn:schemas-microsoft-com:office:spreadsheet}"
-    worksheets = root.findall(f".//{namespace}Worksheet")
-    if not worksheets:
-        raise ValueError("В XML-таблице отсутствуют листы")
-    worksheet = worksheets[0]
-    rows: list[list[object]] = []
-    for row_element in worksheet.findall(f".//{namespace}Row"):
-        row: list[object] = []
-        for cell in row_element.findall(f"{namespace}Cell"):
-            index = cell.get(f"{namespace}Index")
-            if index:
-                row.extend([None] * max(int(index) - len(row) - 1, 0))
-            data = cell.find(f"{namespace}Data")
-            row.append(data.text if data is not None and data.text is not None else None)
-        rows.append(row)
-    sheet_name = worksheet.get(f"{namespace}Name") or "Лист 1"
-    return WorkbookRows(rows=rows, file_format="xls (XML из 1С)", sheet_count=len(worksheets), sheet_name=sheet_name, parser="legacy")
-
-
-def _rows_from_html_table(text: str) -> WorkbookRows:
-    parser = _HtmlTableParser()
-    parser.feed(text)
-    if not parser.rows:
-        raise ValueError("В HTML-документе отсутствует таблица")
-    return WorkbookRows(rows=parser.rows, file_format="xls (HTML из 1С)", sheet_count=1, sheet_name="Лист 1", parser="legacy")
-
-
-def _rows_from_legacy_document(content: bytes) -> WorkbookRows:
-    text = _decode_legacy_document(content)
-    normalized = text.lstrip().lower()
-    if normalized.startswith("<?xml") or "urn:schemas-microsoft-com:office:spreadsheet" in normalized[:4000]:
-        return _rows_from_spreadsheet_xml(text)
-    if "<html" in normalized[:2000] or "<table" in normalized[:4000]:
-        return _rows_from_html_table(text)
-    if "\t" in text:
-        rows = [[cell.strip() for cell in line.split("\t")] for line in text.splitlines() if line.strip()]
-        return WorkbookRows(rows=rows, file_format="xls (текстовая выгрузка из 1С)", sheet_count=1, sheet_name="Лист 1", parser="legacy")
-    raise ValueError("Содержимое файла не является XLS, SpreadsheetML XML, HTML-таблицей или табличным текстом")
-
-
-def _rows_from_xls_via_libreoffice(content: bytes) -> WorkbookRows:
-    """Convert an Excel-readable but malformed XLS to XLSX before parsing it."""
-    executable = shutil.which("libreoffice") or shutil.which("soffice")
-    if not executable:
-        raise RuntimeError("LibreOffice не установлен")
-    with TemporaryDirectory(prefix="clients-xls-") as directory:
-        workdir = Path(directory)
-        source = workdir / "import.xls"
-        source.write_bytes(content)
-        profile = workdir / "profile"
-        process = subprocess.run(
-            [
-                executable,
-                "--headless",
-                "--convert-to",
-                "xlsx",
-                "--outdir",
-                str(workdir),
-                f"-env:UserInstallation={profile.as_uri()}",
-                str(source),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=90,
-            check=False,
-        )
-        converted = workdir / "import.xlsx"
-        if process.returncode != 0 or not converted.is_file():
-            output = (process.stderr or process.stdout).strip()
-            raise ValueError(f"LibreOffice не смог преобразовать XLS{f': {output}' if output else ''}")
-        result = _rows_from_xlsx(converted.read_bytes())
-        result.file_format = "xls → xlsx"
-        result.parser = "libreoffice"
-        return result
-
-
-def _rows_from_xls(content: bytes) -> WorkbookRows:
-    attempts: list[tuple[str, Exception]] = []
-    for parser_name, log_name, parser in (
-        ("xlrd", "xlrd", _rows_from_xls_xlrd),
-        ("calamine", "python-calamine", _rows_from_xls_calamine),
-        ("legacy", "legacy parser", _rows_from_legacy_document),
-        ("libreoffice", "LibreOffice → XLSX", _rows_from_xls_via_libreoffice),
-    ):
-        try:
-            result = parser(content)
-            logger.info("Импорт XLS: %s", log_name)
-            return result
-        except Exception as error:
-            attempts.append((parser_name, error))
-            logger.warning("Импорт XLS: обработчик %s завершился ошибкой %s: %s", log_name, error.__class__.__name__, error)
-
-    logger.error(
-        "Импорт XLS: формат не определён. Диагностика: %s",
-        " | ".join(f"{name}: {error.__class__.__name__}: {error}" for name, error in attempts),
-    )
+def _detect_workbook_format(content: bytes) -> str:
+    if content.startswith(OLE_SIGNATURE):
+        return "xls"
+    if content.startswith(ZIP_SIGNATURE):
+        return "xlsx"
+    signature = content[:8].hex(" ").upper() or "пустой файл"
     raise ValueError(
-        "Не удалось определить формат XLS. Проверены: xlrd, python-calamine, legacy parser и конвертация в XLSX. "
-        "Проверьте файл или сохраните его заново в Excel."
+        f"Не удалось определить формат Excel по сигнатуре ({signature}). "
+        "Загрузите настоящий XLS (Excel 97–2003) или XLSX."
     )
 
 
 def _read_workbook(filename: str, content: bytes) -> WorkbookRows:
-    lower_name = filename.lower()
-    if lower_name.endswith(".xlsx"):
-        return _rows_from_xlsx(content)
-    if lower_name.endswith(".xls"):
-        return _rows_from_xls(content)
-    raise ValueError("Поддерживаются только .xls и .xlsx")
+    extension = Path(filename).suffix.lower() or "без расширения"
+    with TemporaryDirectory(prefix="clients-import-") as directory:
+        path = Path(directory) / f"upload{extension if extension.startswith('.') else '.bin'}"
+        path.write_bytes(content)
+        saved_content = path.read_bytes()
+        if saved_content != content:
+            raise IOError("Загруженный файл изменился при сохранении на диск")
+        mime_type = magic.from_file(str(path), mime=True)
+        try:
+            file_format = _detect_workbook_format(saved_content)
+        except ValueError:
+            logger.error(
+                "Неподдерживаемый файл: путь=%s; размер=%s байт; первые 32 байта=%s; MIME=%s; расширение=%s",
+                path.resolve(), len(saved_content), saved_content[:32].hex(" ").upper(), mime_type, extension,
+            )
+            raise
+        logger.info(
+            "Диагностика файла: путь=%s; размер=%s байт; первые 32 байта=%s; MIME=%s; расширение=%s; формат по сигнатуре=%s; сохранение проверено",
+            path.resolve(), len(saved_content), saved_content[:32].hex(" ").upper(), mime_type, extension, file_format,
+        )
+        try:
+            if file_format == "xls":
+                return _rows_from_xls_xlrd(path)
+            return _rows_from_xlsx(path)
+        except Exception:
+            # logger.exception сохраняет тип ошибки, сообщение и полный traceback.
+            logger.exception("Ошибка чтения файла %s парсером %s", path, "xlrd" if file_format == "xls" else "openpyxl")
+            raise
 
 
 def _describe_import_error(filename: str, error: Exception) -> str:

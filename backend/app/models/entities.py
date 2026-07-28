@@ -1,6 +1,6 @@
 from datetime import datetime, date
 from enum import StrEnum
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
 
@@ -84,6 +84,7 @@ class Import(Base):
     updated_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped_count: Mapped[int] = mapped_column(Integer, default=0)
     error_count: Mapped[int] = mapped_column(Integer, default=0)
+    log_hidden: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
 
 
 class ImportIssue(Base):
