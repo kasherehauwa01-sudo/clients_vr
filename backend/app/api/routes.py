@@ -1,16 +1,33 @@
 from io import BytesIO
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+import logging
+from time import monotonic
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
-from starlette.concurrency import run_in_threadpool
 import xlsxwriter
-from app.db.session import SessionLocal, get_db
+from app.db.session import get_db
 from app.models.entities import AuditLog, Client, ClientStatus, Email, Import, ImportIssue, Phone, TradePlace
 from app.schemas.client import BulkUpdate, ClientDetail, ClientListItem, PagedClients
-from app.services.importer import import_files
+from app.services.import_tasks import create_import_task, get_import_task, run_import_task
 
 router = APIRouter(prefix="/api", tags=["clients"])
+import_logger = logging.getLogger("clients.import")
+
+MANAGER_ORDER = [
+    "Пашута М.С.", "Пашута М.С. (Ростов)", "Родина", "Родина Е.В. (Ростов)",
+    "Новожилова М.", "Королева Светлана", "Ромащенко Екатерина", "Селянкина Татьяна",
+    "Суркова Н.", "Трошина Лариса", "Шакулова Екатерина", "Антюфеева Яна",
+    "Бабушкина Виктория", "Самойлова", "Андреева Дарья", "Гаина Татьяна",
+    "Гордиенко", "Ермохина Ирина", "Кульченко Лилия", "Никишова Ольга",
+    "Пименова Любовь", "Пирожкова Татьяна", "Стародубцева Полина", "Яицкая Ольга",
+    "СОТРУДНИК АВИАТОРОВ", "СОТРУДНИК АХТУБИНСК", "СОТРУДНИК БАХТУРОВА",
+    "СОТРУДНИК ЕВРОПА", "СОТРУДНИК ИДЕЯ", "СОТРУДНИК ПАРКХАУС",
+    "СОТРУДНИК ПРИВОЗ", "СОТРУДНИК САНВЭЙ", "СОТРУДНИК СТРОЙГРАД",
+    "СОТРУДНИК ТУЛАК", "СОТРУДНИК ЦИТРУС", "СОТРУДНИК ЦУМ",
+    "Существующие сотрудники", "Клишко Ю.Н.", "МАРКЕТПЛЕЙСЫ", "Наш Китай",
+    "Нет менеджера", "Дегтярев Алексей", "Дегтярева Оксана Александровна", "!!!", "<>",
+]
 
 
 @router.get("/health")
@@ -20,13 +37,14 @@ def health(db: Session = Depends(get_db)):
 
 
 def to_list_item(client: Client, last_import_at=None) -> ClientListItem:
+    emails = sorted({email.email.strip() for email in client.emails if email.email and email.email.strip()})
     return ClientListItem(
         id=client.id,
         name=client.name,
         company=client.company,
         manager=client.manager,
         phone="\n".join(sorted({phone.phone for phone in client.phones})) or None,
-        email=client.emails[0].email if client.emails else None,
+        email="\n".join(emails) or None,
         trade_place=client.trade_places[0].place if client.trade_places else None,
         birth_date=client.birth_date,
         last_import_at=last_import_at,
@@ -38,6 +56,7 @@ def apply_client_filters(
     query,
     *,
     search=None,
+    phone_search=None,
     manager=None,
     company=None,
     price_type=None,
@@ -52,34 +71,34 @@ def apply_client_filters(
 ):
     if search:
         term = f"%{search.lower()}%"
-        query = query.outerjoin(Email).outerjoin(Phone).outerjoin(TradePlace).where(
-            or_(
-                func.lower(Client.name).like(term),
-                func.lower(Client.company).like(term),
-                func.lower(Client.contact_person).like(term),
-                func.lower(Client.director).like(term),
-                func.lower(Client.client_source).like(term),
-                func.lower(Client.buyer_type).like(term),
-                func.lower(Client.counterparty_type).like(term),
-                func.lower(Email.email).like(term),
-                Phone.phone.like(term),
-                func.lower(TradePlace.place).like(term),
-            )
-        )
+        query = query.where(func.lower(Client.name).like(term))
+    if phone_search:
+        query = query.where(Client.phones.any(Phone.phone == phone_search.strip()))
     if manager:
-        query = query.where(Client.manager == manager)
+        include_empty_manager = "Нет менеджера" in manager
+        selected_managers = [value for value in manager if value != "Нет менеджера"]
+        manager_conditions = []
+        if selected_managers:
+            manager_conditions.append(Client.manager.in_(selected_managers))
+        if include_empty_manager:
+            manager_conditions.append(or_(Client.manager.is_(None), Client.manager == ""))
+        query = query.where(or_(*manager_conditions))
     if company:
         query = query.where(Client.company == company)
     if price_type:
-        query = query.where(Client.price_type == price_type)
+        query = query.where(Client.price_type.in_(price_type))
     if buyer_type:
-        query = query.where(Client.buyer_type == buyer_type)
+        query = query.where(Client.buyer_type.in_(buyer_type))
     if counterparty_type:
-        query = query.where(Client.counterparty_type == counterparty_type)
+        query = query.where(Client.counterparty_type.in_(counterparty_type))
     if trade_place:
         query = query.where(Client.trade_places.any(TradePlace.place == trade_place))
     if has_email is not None:
-        query = query.where(Client.emails.any() if has_email else ~Client.emails.any())
+        # Email.email — обязательное нормализованное поле, поэтому достаточно
+        # проверить непустое значение. Функции trim/length внутри relationship.any
+        # на рабочем PostgreSQL приводили к ошибке выполнения запроса.
+        has_filled_email = Client.emails.any(Email.email != "")
+        query = query.where(has_filled_email if has_email else ~has_filled_email)
     if has_phone is not None:
         query = query.where(Client.phones.any() if has_phone else ~Client.phones.any())
     if status:
@@ -97,11 +116,12 @@ def clients(
     page: int = 1,
     page_size: str = "100",
     search: str | None = None,
-    manager: str | None = None,
+    phone_search: str | None = None,
+    manager: list[str] | None = Query(None),
     company: str | None = None,
-    price_type: str | None = None,
-    buyer_type: str | None = None,
-    counterparty_type: str | None = None,
+    price_type: list[str] | None = Query(None),
+    buyer_type: list[str] | None = Query(None),
+    counterparty_type: list[str] | None = Query(None),
     trade_place: str | None = None,
     has_email: bool | None = None,
     has_phone: bool | None = None,
@@ -121,6 +141,7 @@ def clients(
     filtered_ids = apply_client_filters(
         select(Client.id),
         search=search,
+        phone_search=phone_search,
         manager=manager,
         company=company,
         price_type=price_type,
@@ -164,9 +185,14 @@ def clients(
 
 @router.get("/clients-filter-options")
 def client_filter_options(db: Session = Depends(get_db)):
-    managers = db.scalars(
+    managers_from_db = db.scalars(
         select(Client.manager).where(Client.manager.is_not(None), Client.manager != "").distinct().order_by(Client.manager)
     ).all()
+    manager_rank = {manager: index for index, manager in enumerate(MANAGER_ORDER)}
+    managers = sorted(
+        set(managers_from_db) | {"Нет менеджера"},
+        key=lambda manager: (manager_rank.get(manager, len(MANAGER_ORDER)), manager.casefold()),
+    )
     price_types = db.scalars(
         select(Client.price_type).where(Client.price_type.is_not(None), Client.price_type != "").distinct().order_by(Client.price_type)
     ).all()
@@ -221,17 +247,26 @@ def client_detail(client_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/imports")
-async def upload_import(files: list[UploadFile] = File(...)):
+async def upload_import(background_tasks: BackgroundTasks, files: list[UploadFile] = File(...)):
+    started = monotonic()
+    import_logger.info("Начало загрузки API: файлов=%s", len(files))
     payload = [(file.filename or "import.xlsx", await file.read()) for file in files]
-    # Разбор больших XLS и запись тысяч клиентов — синхронная CPU/DB-работа.
-    # Выполнение её в async endpoint блокировало event loop Uvicorn: nginx не
-    # получал ответ и возвращал 504, а параллельно нельзя было открыть журнал.
-    def run_import():
-        with SessionLocal() as db:
-            return import_files(db, payload)
+    import_logger.info(
+        "Файлы получены API: файлов=%s, байт=%s, длительность чтения upload=%.3f сек",
+        len(payload), sum(len(content) for _, content in payload), monotonic() - started,
+    )
+    task_id = create_import_task(payload)
+    background_tasks.add_task(run_import_task, task_id, payload)
+    import_logger.info("Задача создана: task_id=%s, ответ подготовлен за %.3f сек", task_id, monotonic() - started)
+    return {"status": "accepted", "task_id": task_id}
 
-    summary = await run_in_threadpool(run_import)
-    return {"message": "Импорт завершен", **summary.model_dump()}
+
+@router.get("/imports/tasks/{task_id}")
+def import_task(task_id: str):
+    task = get_import_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Задача импорта не найдена")
+    return task
 
 
 @router.get("/imports")
@@ -247,45 +282,47 @@ def import_issues(import_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/logs")
-def logs(db: Session = Depends(get_db), limit: int = 500):
-    limit = min(max(limit, 1), 2000)
-    # Сначала ограничиваем журнал по индексированному PK. Сортировка результата
-    # JOIN по Import.id заставляла PostgreSQL сканировать и сортировать всю
-    # историю import_issues и на больших базах приводила к nginx 504.
-    import_issues = db.scalars(select(ImportIssue).order_by(ImportIssue.id.desc()).limit(limit)).all()
-    import_ids = {issue.import_id for issue in import_issues}
-    imports_by_id = {
-        import_record.id: import_record
-        for import_record in db.scalars(select(Import).where(Import.id.in_(import_ids))).all()
-    } if import_ids else {}
-    audit_rows = db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)).all()
-    items = [
+def logs(db: Session = Depends(get_db)):
+    imports = db.scalars(
+        select(Import).where(~Import.log_hidden).order_by(Import.id.desc()).limit(100)
+    ).all()
+    import_ids = [item.id for item in imports]
+    first_errors: dict[int, str] = {}
+    if import_ids:
+        errors = db.execute(
+            select(ImportIssue.import_id, ImportIssue.message)
+            .where(ImportIssue.import_id.in_(import_ids), ImportIssue.level == "error")
+            .order_by(ImportIssue.id)
+        ).all()
+        for import_id, message in errors:
+            first_errors.setdefault(import_id, message)
+    return [
         {
-            "id": f"import-{issue.id}",
-            "created_at": imports_by_id[issue.import_id].imported_at,
+            "id": f"import-{item.id}",
+            "created_at": item.imported_at,
             "source": "Импорт",
-            "level": issue.level,
-            "process": imports_by_id[issue.import_id].file_name,
-            "row_number": issue.row_number,
-            "message": issue.message,
-        }
-        for issue in import_issues
-        if issue.import_id in imports_by_id
-    ]
-    items.extend(
-        {
-            "id": f"audit-{audit.id}",
-            "created_at": audit.created_at,
-            "source": "Операция",
-            "level": "info",
-            "process": audit.action,
+            "level": "error" if item.error_count else "info",
+            "process": item.file_name,
             "row_number": None,
-            "message": audit.payload or "",
+            "message": (
+                f"Найдено строк: {item.rows_count}. Загружено: {item.added_count}. "
+                f"Обновлено: {item.updated_count}. Пропущено: {item.skipped_count}. Ошибок: {item.error_count}."
+                + (f" Ошибка: {first_errors[item.id]}" if item.id in first_errors else "")
+            ),
         }
-        for audit in audit_rows
-    )
-    items.sort(key=lambda item: (item["created_at"] is not None, item["created_at"]), reverse=True)
-    return items[:limit]
+        for item in imports
+    ]
+
+
+@router.delete("/logs")
+def delete_logs(db: Session = Depends(get_db)):
+    # Import нельзя удалять физически: на него ссылаются карточки клиентов.
+    # Поэтому служебные записи скрываем, а собственно события удаляем полностью.
+    hidden = db.execute(update(Import).where(~Import.log_hidden).values(log_hidden=True)).rowcount or 0
+    db.execute(delete(ImportIssue))
+    db.execute(delete(AuditLog))
+    db.commit()
+    return {"deleted": hidden}
 
 @router.post("/clients/bulk")
 def bulk_update(payload: BulkUpdate, db: Session = Depends(get_db)):
@@ -303,7 +340,20 @@ def bulk_update(payload: BulkUpdate, db: Session = Depends(get_db)):
 
 
 @router.delete("/clients")
-def bulk_delete(ids: str, db: Session = Depends(get_db)):
+def bulk_delete(
+    ids: str | None = None,
+    delete_all: bool = Query(False, alias="all"),
+    db: Session = Depends(get_db),
+):
+    if delete_all:
+        # Связанные телефоны, email и места торговли удаляются на уровне БД
+        # благодаря внешним ключам с ON DELETE CASCADE.
+        deleted = db.execute(delete(Client)).rowcount or 0
+        db.add(AuditLog(action="delete_all_clients", payload=f"Удалено клиентов: {deleted}"))
+        db.commit()
+        return {"deleted": deleted}
+    if not ids:
+        raise HTTPException(status_code=400, detail="Не переданы строки для удаления")
     id_list = [int(value) for value in ids.split(",") if value.strip()]
     clients_to_delete = db.scalars(select(Client).where(Client.id.in_(id_list))).all()
     for client in clients_to_delete:
@@ -317,11 +367,12 @@ def bulk_delete(ids: str, db: Session = Depends(get_db)):
 def export_clients(
     db: Session = Depends(get_db),
     search: str | None = None,
-    manager: str | None = None,
+    phone_search: str | None = None,
+    manager: list[str] | None = Query(None),
     company: str | None = None,
-    price_type: str | None = None,
-    buyer_type: str | None = None,
-    counterparty_type: str | None = None,
+    price_type: list[str] | None = Query(None),
+    buyer_type: list[str] | None = Query(None),
+    counterparty_type: list[str] | None = Query(None),
     trade_place: str | None = None,
     has_email: bool | None = None,
     has_phone: bool | None = None,
@@ -342,6 +393,7 @@ def export_clients(
     filtered_ids = apply_client_filters(
         select(Client.id),
         search=search,
+        phone_search=phone_search,
         manager=manager,
         company=company,
         price_type=price_type,
@@ -369,7 +421,7 @@ def export_clients(
                 client.company or "",
                 client.manager or "",
                 "\n".join(sorted({phone.phone for phone in client.phones})),
-                client.emails[0].email if client.emails else "",
+                "\n".join(sorted({email.email.strip() for email in client.emails if email.email and email.email.strip()})),
                 client.trade_places[0].place if client.trade_places else "",
                 str(client.birth_date or ""),
                 client.client_source or "",
