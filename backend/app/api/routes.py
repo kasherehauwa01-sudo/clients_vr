@@ -12,6 +12,21 @@ from app.services.importer import import_files
 
 router = APIRouter(prefix="/api", tags=["clients"])
 
+MANAGER_ORDER = [
+    "Пашута М.С.", "Пашута М.С. (Ростов)", "Родина", "Родина Е.В. (Ростов)",
+    "Новожилова М.", "Королева Светлана", "Ромащенко Екатерина", "Селянкина Татьяна",
+    "Суркова Н.", "Трошина Лариса", "Шакулова Екатерина", "Антюфеева Яна",
+    "Бабушкина Виктория", "Самойлова", "Андреева Дарья", "Гаина Татьяна",
+    "Гордиенко", "Ермохина Ирина", "Кульченко Лилия", "Никишова Ольга",
+    "Пименова Любовь", "Пирожкова Татьяна", "Стародубцева Полина", "Яицкая Ольга",
+    "СОТРУДНИК АВИАТОРОВ", "СОТРУДНИК АХТУБИНСК", "СОТРУДНИК БАХТУРОВА",
+    "СОТРУДНИК ЕВРОПА", "СОТРУДНИК ИДЕЯ", "СОТРУДНИК ПАРКХАУС",
+    "СОТРУДНИК ПРИВОЗ", "СОТРУДНИК САНВЭЙ", "СОТРУДНИК СТРОЙГРАД",
+    "СОТРУДНИК ТУЛАК", "СОТРУДНИК ЦИТРУС", "СОТРУДНИК ЦУМ",
+    "Существующие сотрудники", "Клишко Ю.Н.", "МАРКЕТПЛЕЙСЫ", "Наш Китай",
+    "Нет менеджера", "Дегтярев Алексей", "Дегтярева Оксана Александровна", "!!!", "<>",
+]
+
 
 @router.get("/health")
 def health(db: Session = Depends(get_db)):
@@ -26,7 +41,7 @@ def to_list_item(client: Client, last_import_at=None) -> ClientListItem:
         company=client.company,
         manager=client.manager,
         phone="\n".join(sorted({phone.phone for phone in client.phones})) or None,
-        email=client.emails[0].email if client.emails else None,
+        email="\n".join(sorted({email.email for email in client.emails})) or None,
         trade_place=client.trade_places[0].place if client.trade_places else None,
         birth_date=client.birth_date,
         last_import_at=last_import_at,
@@ -55,9 +70,16 @@ def apply_client_filters(
         term = f"%{search.lower()}%"
         query = query.where(func.lower(Client.name).like(term))
     if phone_search:
-        query = query.where(Client.phones.any(Phone.phone.like(f"%{phone_search}%")))
+        query = query.where(Client.phones.any(Phone.phone == phone_search.strip()))
     if manager:
-        query = query.where(Client.manager.in_(manager))
+        include_empty_manager = "Нет менеджера" in manager
+        selected_managers = [value for value in manager if value != "Нет менеджера"]
+        manager_conditions = []
+        if selected_managers:
+            manager_conditions.append(Client.manager.in_(selected_managers))
+        if include_empty_manager:
+            manager_conditions.append(or_(Client.manager.is_(None), Client.manager == ""))
+        query = query.where(or_(*manager_conditions))
     if company:
         query = query.where(Client.company == company)
     if price_type:
@@ -156,9 +178,14 @@ def clients(
 
 @router.get("/clients-filter-options")
 def client_filter_options(db: Session = Depends(get_db)):
-    managers = db.scalars(
+    managers_from_db = db.scalars(
         select(Client.manager).where(Client.manager.is_not(None), Client.manager != "").distinct().order_by(Client.manager)
     ).all()
+    manager_rank = {manager: index for index, manager in enumerate(MANAGER_ORDER)}
+    managers = sorted(
+        set(managers_from_db) | {"Нет менеджера"},
+        key=lambda manager: (manager_rank.get(manager, len(MANAGER_ORDER)), manager.casefold()),
+    )
     price_types = db.scalars(
         select(Client.price_type).where(Client.price_type.is_not(None), Client.price_type != "").distinct().order_by(Client.price_type)
     ).all()
@@ -363,7 +390,7 @@ def export_clients(
                 client.company or "",
                 client.manager or "",
                 "\n".join(sorted({phone.phone for phone in client.phones})),
-                client.emails[0].email if client.emails else "",
+                "\n".join(sorted({email.email for email in client.emails})),
                 client.trade_places[0].place if client.trade_places else "",
                 str(client.birth_date or ""),
                 client.client_source or "",
