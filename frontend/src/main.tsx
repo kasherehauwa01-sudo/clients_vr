@@ -99,7 +99,7 @@ function App() {
     return params.toString();
   }, [filterQuery, page, pageSize]);
   const exportUrl = `${API_BASE_URL}/clients-export.xlsx${filterQuery ? `?${filterQuery}` : ''}`;
-  const load = () => api(`/clients?${query}`).then(d => { setClients(d.items); setTotal(d.total); });
+  const load = (signal?: AbortSignal) => api(`/clients?${query}`, { signal }).then(d => { setClients(d.items); setTotal(d.total); });
   const visibleIds = useMemo(() => clients.map(client => client.id), [clients]);
   const allVisibleChecked = visibleIds.length > 0 && visibleIds.every(id => checkedIds.has(id));
   const toggleClientCheck = (clientId: number) => setCheckedIds(previous => { const next = new Set(previous); next.has(clientId) ? next.delete(clientId) : next.add(clientId); return next; });
@@ -118,7 +118,17 @@ function App() {
   const totalPages = pageSize === 'all' ? 1 : Math.ceil(total / pageSizeNumber) || 1;
   const resetFilters = () => { setQ(''); setPhoneQuery(''); setPriceType([]); setBuyerType([]); setCounterpartyType([]); setManager([]); setHasPhone(true); setHasEmail(false); setPage(1); };
 
-  useEffect(() => { if (activeTab === 'registry') load(); }, [query, activeTab]);
+  useEffect(() => {
+    if (activeTab !== 'registry') return;
+    // При быстром переключении фильтров старый ответ не должен перезаписать
+    // более свежий результат, в котором уже применён фильтр Email.
+    const controller = new AbortController();
+    load(controller.signal).catch(error => {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      setNotice(`Не удалось загрузить реестр: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return () => controller.abort();
+  }, [query, activeTab]);
   useEffect(() => { api('/clients-filter-options').then(setFilterOptions); }, []);
   useEffect(() => { if (activeTab === 'settings') loadLogs(); }, [activeTab]);
 

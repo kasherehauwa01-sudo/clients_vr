@@ -35,13 +35,14 @@ def health(db: Session = Depends(get_db)):
 
 
 def to_list_item(client: Client, last_import_at=None) -> ClientListItem:
+    emails = sorted({email.email.strip() for email in client.emails if email.email and email.email.strip()})
     return ClientListItem(
         id=client.id,
         name=client.name,
         company=client.company,
         manager=client.manager,
         phone="\n".join(sorted({phone.phone for phone in client.phones})) or None,
-        email="\n".join(sorted({email.email for email in client.emails})) or None,
+        email="\n".join(emails) or None,
         trade_place=client.trade_places[0].place if client.trade_places else None,
         birth_date=client.birth_date,
         last_import_at=last_import_at,
@@ -91,7 +92,10 @@ def apply_client_filters(
     if trade_place:
         query = query.where(Client.trade_places.any(TradePlace.place == trade_place))
     if has_email is not None:
-        query = query.where(Client.emails.any() if has_email else ~Client.emails.any())
+        # Существование связанной строки ещё не означает, что email заполнен:
+        # в старых импортированных данных встречаются пустые и пробельные значения.
+        has_filled_email = Client.emails.any(func.length(func.trim(Email.email)) > 0)
+        query = query.where(has_filled_email if has_email else ~has_filled_email)
     if has_phone is not None:
         query = query.where(Client.phones.any() if has_phone else ~Client.phones.any())
     if status:
@@ -390,7 +394,7 @@ def export_clients(
                 client.company or "",
                 client.manager or "",
                 "\n".join(sorted({phone.phone for phone in client.phones})),
-                "\n".join(sorted({email.email for email in client.emails})),
+                "\n".join(sorted({email.email.strip() for email in client.emails if email.email and email.email.strip()})),
                 client.trade_places[0].place if client.trade_places else "",
                 str(client.birth_date or ""),
                 client.client_source or "",
