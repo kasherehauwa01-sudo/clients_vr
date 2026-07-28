@@ -6,9 +6,11 @@ RUN npm install && npm run build
 
 FROM python:3.12-slim AS backend
 WORKDIR /app
+ENV CLIENTS_IMPORT_LOG=/app/logs/import.log
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libmagic1 \
     && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /app/logs
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/app ./app

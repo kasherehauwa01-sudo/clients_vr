@@ -167,8 +167,17 @@ function App() {
     setUploading(true);
     setNotice(`Загрузка: ${fileNames}`);
     try {
-      const r = await api('/imports', { method: 'POST', body: fd });
-      setNotice(`${r.message}. Всего строк: ${r.rows}. Прочитано: ${r.read}. Добавлено: ${r.added}. Обновлено: ${r.updated}. Пропущено: ${r.skipped}. Ошибок: ${r.errors}`);
+      const accepted = await api('/imports', { method: 'POST', body: fd });
+      let task = await api(`/imports/tasks/${accepted.task_id}`);
+      while (task.status === 'accepted' || task.status === 'running') {
+        const counters = task.total ? ` ${task.processed} / ${task.total} (${task.progress}%)` : '';
+        setNotice(`${task.stage}${counters}`);
+        await new Promise(resolve => window.setTimeout(resolve, 1500));
+        task = await api(`/imports/tasks/${accepted.task_id}`);
+      }
+      if (task.status === 'failed') throw new Error(task.error || 'Неизвестная ошибка фонового импорта');
+      const r = task.result;
+      setNotice(`Импорт завершён. Всего строк: ${r.rows}. Прочитано: ${r.read}. Добавлено: ${r.added}. Обновлено: ${r.updated}. Пропущено: ${r.skipped}. Ошибок: ${r.errors}`);
       setHelpTab('journal');
       await Promise.all([load(), loadLogs()]);
     } catch (error) {

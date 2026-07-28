@@ -1,16 +1,33 @@
 from io import BytesIO
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+import logging
+from time import monotonic
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
-from starlette.concurrency import run_in_threadpool
 import xlsxwriter
-from app.db.session import SessionLocal, get_db
+from app.db.session import get_db
 from app.models.entities import AuditLog, Client, ClientStatus, Email, Import, ImportIssue, Phone, TradePlace
 from app.schemas.client import BulkUpdate, ClientDetail, ClientListItem, PagedClients
-from app.services.importer import import_files
+from app.services.import_tasks import create_import_task, get_import_task, run_import_task
 
 router = APIRouter(prefix="/api", tags=["clients"])
+import_logger = logging.getLogger("clients.import")
+
+MANAGER_ORDER = [
+    "Пашута М.С.", "Пашута М.С. (Ростов)", "Родина", "Родина Е.В. (Ростов)",
+    "Новожилова М.", "Королева Светлана", "Ромащенко Екатерина", "Селянкина Татьяна",
+    "Суркова Н.", "Трошина Лариса", "Шакулова Екатерина", "Антюфеева Яна",
+    "Бабушкина Виктория", "Самойлова", "Андреева Дарья", "Гаина Татьяна",
+    "Гордиенко", "Ермохина Ирина", "Кульченко Лилия", "Никишова Ольга",
+    "Пименова Любовь", "Пирожкова Татьяна", "Стародубцева Полина", "Яицкая Ольга",
+    "СОТРУДНИК АВИАТОРОВ", "СОТРУДНИК АХТУБИНСК", "СОТРУДНИК БАХТУРОВА",
+    "СОТРУДНИК ЕВРОПА", "СОТРУДНИК ИДЕЯ", "СОТРУДНИК ПАРКХАУС",
+    "СОТРУДНИК ПРИВОЗ", "СОТРУДНИК САНВЭЙ", "СОТРУДНИК СТРОЙГРАД",
+    "СОТРУДНИК ТУЛАК", "СОТРУДНИК ЦИТРУС", "СОТРУДНИК ЦУМ",
+    "Существующие сотрудники", "Клишко Ю.Н.", "МАРКЕТПЛЕЙСЫ", "Наш Китай",
+    "Нет менеджера", "Дегтярев Алексей", "Дегтярева Оксана Александровна", "!!!", "<>",
+]
 
 MANAGER_ORDER = [
     "Пашута М.С.", "Пашута М.С. (Ростов)", "Родина", "Родина Е.В. (Ростов)",
@@ -245,17 +262,26 @@ def client_detail(client_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/imports")
-async def upload_import(files: list[UploadFile] = File(...)):
+async def upload_import(background_tasks: BackgroundTasks, files: list[UploadFile] = File(...)):
+    started = monotonic()
+    import_logger.info("Начало загрузки API: файлов=%s", len(files))
     payload = [(file.filename or "import.xlsx", await file.read()) for file in files]
-    # Разбор больших XLS и запись тысяч клиентов — синхронная CPU/DB-работа.
-    # Выполнение её в async endpoint блокировало event loop Uvicorn: nginx не
-    # получал ответ и возвращал 504, а параллельно нельзя было открыть журнал.
-    def run_import():
-        with SessionLocal() as db:
-            return import_files(db, payload)
+    import_logger.info(
+        "Файлы получены API: файлов=%s, байт=%s, длительность чтения upload=%.3f сек",
+        len(payload), sum(len(content) for _, content in payload), monotonic() - started,
+    )
+    task_id = create_import_task(payload)
+    background_tasks.add_task(run_import_task, task_id, payload)
+    import_logger.info("Задача создана: task_id=%s, ответ подготовлен за %.3f сек", task_id, monotonic() - started)
+    return {"status": "accepted", "task_id": task_id}
 
-    summary = await run_in_threadpool(run_import)
-    return {"message": "Импорт завершен", **summary.model_dump()}
+
+@router.get("/imports/tasks/{task_id}")
+def import_task(task_id: str):
+    task = get_import_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Задача импорта не найдена")
+    return task
 
 
 @router.get("/imports")

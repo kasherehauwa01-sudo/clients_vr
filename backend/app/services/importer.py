@@ -1,8 +1,12 @@
 from dataclasses import dataclass, field
 import logging
+from logging.handlers import RotatingFileHandler
+import os
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
+from time import monotonic
+from typing import Callable
 from zipfile import BadZipFile
 import magic
 import xlrd
@@ -15,6 +19,17 @@ from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Ph
 from app.services.normalization import clean_multiline_text, clean_text, extract_phones, normalize_email, parse_date, repair_legacy_excel_text, split_values
 
 logger = logging.getLogger(__name__)
+import_logger = logging.getLogger("clients.import")
+if not import_logger.handlers:
+    import_log_path = Path(os.getenv("CLIENTS_IMPORT_LOG", "/tmp/clients-import.log"))
+    import_log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(import_log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    import_logger.addHandler(handler)
+    import_logger.setLevel(logging.INFO)
+    import_logger.propagate = False
+
+ProgressCallback = Callable[[str, int, int], None]
 
 COLUMN_ORDER = [
     "name",
@@ -395,21 +410,34 @@ def _log_issue(db: Session, import_id: int, message: str, *, row_number: int | N
     db.add(ImportIssue(import_id=import_id, row_number=row_number, level=level, message=message))
 
 
-def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
+def import_files(db: Session, files: list[tuple[str, bytes]], progress: ProgressCallback | None = None) -> ImportSummary:
+    import_started = monotonic()
+    import_logger.info("Начало загрузки: файлов=%s", len(files))
     total = ImportSummary(files=len(files))
     for filename, content in files:
+        file_started = monotonic()
+        import_logger.info("Файл получен: имя=%s, размер=%s байт", filename, len(content))
+        if progress:
+            progress("Чтение…", 0, 0)
         imp = Import(file_name=filename, rows_count=0, added_count=0, updated_count=0, skipped_count=0, error_count=0)
         db.add(imp)
         db.flush()
         try:
             parsed = _read_rows(filename, content)
+            import_logger.info(
+                "Файл открыт и прочитан: имя=%s, найдено=%s, строк для обработки=%s, длительность=%.3f сек",
+                filename, parsed.total_rows, parsed.read_rows, monotonic() - file_started,
+            )
+            if progress:
+                progress("Обработка…", 0, parsed.read_rows)
             total.logs.extend(parsed.logs)
             for message in parsed.logs:
                 _log_issue(db, imp.id, message)
             imp.rows_count = parsed.read_rows
             total.rows += parsed.total_rows
             total.read += parsed.read_rows
-            for row in parsed.rows:
+            processing_started = monotonic()
+            for processed, row in enumerate(parsed.rows, start=1):
                 row_number = int(row.get("_row_number") or 0) or None
                 try:
                     created = False
@@ -472,6 +500,14 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
                     error_message = f"Файл «{filename}», строка {row_number}. Причина: {exc}. Что исправить: проверьте значения в этой строке и повторите загрузку."
                     total.logs.append(error_message)
                     _log_issue(db, imp.id, error_message, row_number=row_number, level="error")
+                if processed == 1 or processed % 100 == 0 or processed == parsed.read_rows:
+                    elapsed = monotonic() - processing_started
+                    import_logger.info(
+                        "Обработано строк: файл=%s, обработано=%s/%s, длительность обработки=%.3f сек",
+                        filename, processed, parsed.read_rows, elapsed,
+                    )
+                    if progress:
+                        progress("Обработка…", processed, parsed.read_rows)
             imp.skipped_count = max(parsed.read_rows - imp.added_count - imp.updated_count - imp.error_count, 0)
             total.skipped += imp.skipped_count
             stats = [
@@ -493,5 +529,13 @@ def import_files(db: Session, files: list[tuple[str, bytes]]) -> ImportSummary:
             message = _describe_import_error(filename, exc)
             total.logs.append(message)
             _log_issue(db, imp.id, message, level="error")
+        if progress:
+            progress("Запись в базу…", imp.rows_count, imp.rows_count)
+        commit_started = monotonic()
         db.commit()
+        import_logger.info(
+            "Запись в БД завершена: файл=%s, commit=%.3f сек, всего по файлу=%.3f сек",
+            filename, monotonic() - commit_started, monotonic() - file_started,
+        )
+    import_logger.info("Импорт завершён: файлов=%s, длительность=%.3f сек", len(files), monotonic() - import_started)
     return total
