@@ -6,6 +6,7 @@ type Client = { id: number; name: string; company?: string; manager?: string; ph
 type ClientStatus = 'active' | 'archived' | 'out_of_stock';
 type MainTab = 'registry' | 'settings';
 type HelpTab = 'features' | 'manual' | 'journal';
+type PresenceFilter = '' | 'true' | 'false';
 type FilterOptions = { managers: string[]; price_types: string[]; buyer_types: string[]; counterparty_types: string[] };
 type LogEntry = { id: string; created_at?: string; source: string; level: string; process: string; row_number?: number; message: string };
 
@@ -56,8 +57,8 @@ function App() {
   const [phoneQuery, setPhoneQuery] = useState('');
   const [manager, setManager] = useState<string[]>([]);
   const [priceType, setPriceType] = useState<string[]>([]);
-  const [hasPhone, setHasPhone] = useState(true);
-  const [hasEmail, setHasEmail] = useState(false);
+  const [hasPhone, setHasPhone] = useState<PresenceFilter>('true');
+  const [hasEmail, setHasEmail] = useState<PresenceFilter>('');
   const [buyerType, setBuyerType] = useState<string[]>([]);
   const [counterpartyType, setCounterpartyType] = useState<string[]>([]);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -115,8 +116,8 @@ function App() {
     priceType.forEach(value => params.append('price_type', value));
     buyerType.forEach(value => params.append('buyer_type', value));
     counterpartyType.forEach(value => params.append('counterparty_type', value));
-    params.set('has_phone', String(hasPhone));
-    if (hasEmail) params.set('has_email', 'true');
+    if (hasPhone) params.set('has_phone', hasPhone);
+    if (hasEmail) params.set('has_email', hasEmail);
     return params.toString();
   }, [q, phoneQuery, manager, priceType, hasPhone, hasEmail, buyerType, counterpartyType]);
   const query = useMemo(() => {
@@ -143,7 +144,7 @@ function App() {
   };
   const pageSizeNumber = pageSize === 'all' ? Math.max(total, 1) : Number(pageSize);
   const totalPages = pageSize === 'all' ? 1 : Math.ceil(total / pageSizeNumber) || 1;
-  const resetFilters = () => { setQ(''); setPhoneQuery(''); setPriceType([]); setBuyerType([]); setCounterpartyType([]); setManager([]); setHasPhone(true); setHasEmail(false); setPage(1); };
+  const resetFilters = () => { setQ(''); setPhoneQuery(''); setPriceType([]); setBuyerType([]); setCounterpartyType([]); setManager([]); setHasPhone('true'); setHasEmail(''); setPage(1); };
 
   useEffect(() => {
     if (activeTab !== 'registry') return;
@@ -232,8 +233,8 @@ function MultiFilter({ title, values, selected, onChange, searchable = false }: 
   const visibleValues = search ? values.filter(value => value.toLocaleLowerCase('ru').includes(search.toLocaleLowerCase('ru'))) : values;
   return <details className="filter-group"><summary><span>{title}</span>{selected.length > 0 && <span className="filter-count">{selected.length}</span>}</summary>{searchable && <input className="filter-search" type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder={`Поиск: ${title.toLocaleLowerCase('ru')}`} aria-label={`Поиск по значениям фильтра ${title}`} />}<div className="filter-values">{visibleValues.length ? visibleValues.map(value => <label key={value}><input type="checkbox" checked={selected.includes(value)} onChange={() => toggle(value)} />{value}</label>) : <p>Значения не найдены</p>}</div></details>;
 }
-function FilterDialog(props: { q: string; phoneQuery: string; hasPhone: boolean; hasEmail: boolean; manager: string[]; priceType: string[]; buyerType: string[]; counterpartyType: string[]; options: FilterOptions; onQ: (value: string) => void; onPhoneQuery: (value: string) => void; onHasPhone: (value: boolean) => void; onHasEmail: (value: boolean) => void; onManager: (value: string[]) => void; onPriceType: (value: string[]) => void; onBuyerType: (value: string[]) => void; onCounterpartyType: (value: string[]) => void; onReset: () => void; onClose: () => void }) {
-  return <div className="filter-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) props.onClose(); }}><section className="filter-dialog" role="dialog" aria-modal="true" aria-labelledby="filter-title"><header><div><p className="eyebrow">Реестр</p><h2 id="filter-title">Поиск и фильтры</h2></div><button className="dialog-close" type="button" aria-label="Закрыть" onClick={props.onClose}>×</button></header><div className="filter-fields"><label>Поиск по наименованию<input autoFocus type="search" value={props.q} onChange={event => props.onQ(event.target.value)} placeholder="Введите наименование" /></label><label>Поиск по номеру телефона<input type="search" inputMode="tel" value={props.phoneQuery} onChange={event => props.onPhoneQuery(event.target.value)} placeholder="Введите номер телефона" /></label><label className="switch-row"><input type="checkbox" checked={props.hasPhone} onChange={event => props.onHasPhone(event.target.checked)} /><span>Только с телефонами</span></label><label className="switch-row"><input type="checkbox" checked={props.hasEmail} onChange={event => props.onHasEmail(event.target.checked)} /><span>Только с Email</span></label></div><div className="filter-groups"><MultiFilter title="Тип цены" values={props.options.price_types} selected={props.priceType} onChange={props.onPriceType} /><MultiFilter title="Вид покупателя" values={props.options.buyer_types} selected={props.buyerType} onChange={props.onBuyerType} /><MultiFilter title="Вид контрагента" values={props.options.counterparty_types} selected={props.counterpartyType} onChange={props.onCounterpartyType} /><MultiFilter title="Менеджер" values={props.options.managers} selected={props.manager} onChange={props.onManager} searchable /></div><footer className="filter-actions"><button className="tonal" type="button" onClick={props.onReset}>Сбросить</button><button className="primary-action" type="button" onClick={props.onClose}>Показать результаты</button></footer></section></div>;
+function FilterDialog(props: { q: string; phoneQuery: string; hasPhone: PresenceFilter; hasEmail: PresenceFilter; manager: string[]; priceType: string[]; buyerType: string[]; counterpartyType: string[]; options: FilterOptions; onQ: (value: string) => void; onPhoneQuery: (value: string) => void; onHasPhone: (value: PresenceFilter) => void; onHasEmail: (value: PresenceFilter) => void; onManager: (value: string[]) => void; onPriceType: (value: string[]) => void; onBuyerType: (value: string[]) => void; onCounterpartyType: (value: string[]) => void; onReset: () => void; onClose: () => void }) {
+  return <div className="filter-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) props.onClose(); }}><section className="filter-dialog" role="dialog" aria-modal="true" aria-labelledby="filter-title"><header><div><p className="eyebrow">Реестр</p><h2 id="filter-title">Поиск и фильтры</h2></div><button className="dialog-close" type="button" aria-label="Закрыть" onClick={props.onClose}>×</button></header><div className="filter-fields"><label>Поиск по наименованию<input autoFocus type="search" value={props.q} onChange={event => props.onQ(event.target.value)} placeholder="Введите наименование" /></label><label>Поиск по номеру телефона<input type="search" inputMode="tel" value={props.phoneQuery} onChange={event => props.onPhoneQuery(event.target.value)} placeholder="Введите номер телефона" /></label><label>Телефон<select value={props.hasPhone} onChange={event => props.onHasPhone(event.target.value as PresenceFilter)}><option value="true">Да</option><option value="false">Нет</option><option value="">Все</option></select></label><label>Email<select value={props.hasEmail} onChange={event => props.onHasEmail(event.target.value as PresenceFilter)}><option value="true">Да</option><option value="false">Нет</option><option value="">Все</option></select></label></div><div className="filter-groups"><MultiFilter title="Тип цены" values={props.options.price_types} selected={props.priceType} onChange={props.onPriceType} /><MultiFilter title="Вид покупателя" values={props.options.buyer_types} selected={props.buyerType} onChange={props.onBuyerType} /><MultiFilter title="Вид контрагента" values={props.options.counterparty_types} selected={props.counterpartyType} onChange={props.onCounterpartyType} /><MultiFilter title="Менеджер" values={props.options.managers} selected={props.manager} onChange={props.onManager} searchable /></div><footer className="filter-actions"><button className="tonal" type="button" onClick={props.onReset}>Сбросить</button><button className="primary-action" type="button" onClick={props.onClose}>Показать результаты</button></footer></section></div>;
 }
 function Settings({ active, onChange, onUpload, onDeleteAllClients, notice, uploading, logs, logsLoading, onRefreshLogs, onDeleteLogs }: { active: HelpTab; onChange: (tab: HelpTab) => void; onUpload: () => void; onDeleteAllClients: () => void; notice: string; uploading: boolean; logs: LogEntry[]; logsLoading: boolean; onRefreshLogs: () => void; onDeleteLogs: () => void }) {
   const updateCommand = '/var/www/html/vr/clients/update.sh';
