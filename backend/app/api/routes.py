@@ -1,7 +1,7 @@
 from io import BytesIO
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, selectinload
 from starlette.concurrency import run_in_threadpool
 import xlsxwriter
@@ -38,6 +38,7 @@ def apply_client_filters(
     query,
     *,
     search=None,
+    phone_search=None,
     manager=None,
     company=None,
     price_type=None,
@@ -52,30 +53,19 @@ def apply_client_filters(
 ):
     if search:
         term = f"%{search.lower()}%"
-        query = query.outerjoin(Email).outerjoin(Phone).outerjoin(TradePlace).where(
-            or_(
-                func.lower(Client.name).like(term),
-                func.lower(Client.company).like(term),
-                func.lower(Client.contact_person).like(term),
-                func.lower(Client.director).like(term),
-                func.lower(Client.client_source).like(term),
-                func.lower(Client.buyer_type).like(term),
-                func.lower(Client.counterparty_type).like(term),
-                func.lower(Email.email).like(term),
-                Phone.phone.like(term),
-                func.lower(TradePlace.place).like(term),
-            )
-        )
+        query = query.where(func.lower(Client.name).like(term))
+    if phone_search:
+        query = query.where(Client.phones.any(Phone.phone.like(f"%{phone_search}%")))
     if manager:
-        query = query.where(Client.manager == manager)
+        query = query.where(Client.manager.in_(manager))
     if company:
         query = query.where(Client.company == company)
     if price_type:
-        query = query.where(Client.price_type == price_type)
+        query = query.where(Client.price_type.in_(price_type))
     if buyer_type:
-        query = query.where(Client.buyer_type == buyer_type)
+        query = query.where(Client.buyer_type.in_(buyer_type))
     if counterparty_type:
-        query = query.where(Client.counterparty_type == counterparty_type)
+        query = query.where(Client.counterparty_type.in_(counterparty_type))
     if trade_place:
         query = query.where(Client.trade_places.any(TradePlace.place == trade_place))
     if has_email is not None:
@@ -97,11 +87,12 @@ def clients(
     page: int = 1,
     page_size: str = "100",
     search: str | None = None,
-    manager: str | None = None,
+    phone_search: str | None = None,
+    manager: list[str] | None = Query(None),
     company: str | None = None,
-    price_type: str | None = None,
-    buyer_type: str | None = None,
-    counterparty_type: str | None = None,
+    price_type: list[str] | None = Query(None),
+    buyer_type: list[str] | None = Query(None),
+    counterparty_type: list[str] | None = Query(None),
     trade_place: str | None = None,
     has_email: bool | None = None,
     has_phone: bool | None = None,
@@ -121,6 +112,7 @@ def clients(
     filtered_ids = apply_client_filters(
         select(Client.id),
         search=search,
+        phone_search=phone_search,
         manager=manager,
         company=company,
         price_type=price_type,
@@ -317,11 +309,12 @@ def bulk_delete(ids: str, db: Session = Depends(get_db)):
 def export_clients(
     db: Session = Depends(get_db),
     search: str | None = None,
-    manager: str | None = None,
+    phone_search: str | None = None,
+    manager: list[str] | None = Query(None),
     company: str | None = None,
-    price_type: str | None = None,
-    buyer_type: str | None = None,
-    counterparty_type: str | None = None,
+    price_type: list[str] | None = Query(None),
+    buyer_type: list[str] | None = Query(None),
+    counterparty_type: list[str] | None = Query(None),
     trade_place: str | None = None,
     has_email: bool | None = None,
     has_phone: bool | None = None,
@@ -342,6 +335,7 @@ def export_clients(
     filtered_ids = apply_client_filters(
         select(Client.id),
         search=search,
+        phone_search=phone_search,
         manager=manager,
         company=company,
         price_type=price_type,
