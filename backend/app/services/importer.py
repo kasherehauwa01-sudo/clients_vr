@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Phone, PhoneType, TradePlace
-from app.services.normalization import clean_multiline_text, clean_text, extract_phones, normalize_email, parse_date, repair_legacy_excel_text, split_values
+from app.services.normalization import clean_multiline_text, clean_text, extract_emails, extract_phones, parse_date, repair_legacy_excel_text, split_values
 
 logger = logging.getLogger(__name__)
 import_logger = logging.getLogger("clients.import")
@@ -445,7 +445,14 @@ def import_files(db: Session, files: list[tuple[str, bytes]], progress: Progress
                     client_id: int | None = None
                     action = "client_updated"
                     with db.begin_nested():
-                        emails = [email for email in (normalize_email(value) for value in split_values(row.get("emails"))) if email]
+                        emails = list(
+                            dict.fromkeys(
+                                extract_emails(row.get("emails"))
+                                + extract_emails(row.get("trade_places"))
+                                + extract_emails(row.get("director"))
+                                + extract_emails(row.get("contact_person"))
+                            )
+                        )
                         sms = extract_phones(row.get("sms_phones"))
                         common = list(
                             dict.fromkeys(
