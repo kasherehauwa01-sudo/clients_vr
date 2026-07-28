@@ -6,6 +6,11 @@ PHONE_RE = re.compile(r"\d+")
 PHONE_IN_TEXT_RE = re.compile(
     r"(?<!\d)(?:\+?[78](?:[\s().-]*\d){10}|(?:\d[\s().-]*){9}\d)(?!\d)"
 )
+EMAIL_IN_TEXT_RE = re.compile(
+    r"(?i)(?<![\w@])[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?![\w@])"
+)
 
 
 def clean_text(value: object) -> str | None:
@@ -76,6 +81,14 @@ def normalize_email(value: object) -> str | None:
         return validate_email(text, check_deliverability=False).normalized.lower()
     except EmailNotValidError:
         return None
+
+
+def extract_emails(value: object) -> list[str]:
+    """Извлекает и нормализует все email из произвольного текста XLS."""
+    if value is None:
+        return []
+    emails = [normalize_email(match.group()) for match in EMAIL_IN_TEXT_RE.finditer(str(value))]
+    return list(dict.fromkeys(email for email in emails if email))
 
 
 def parse_date(value: object) -> date | None:
