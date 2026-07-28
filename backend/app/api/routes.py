@@ -92,9 +92,10 @@ def apply_client_filters(
     if trade_place:
         query = query.where(Client.trade_places.any(TradePlace.place == trade_place))
     if has_email is not None:
-        # Существование связанной строки ещё не означает, что email заполнен:
-        # в старых импортированных данных встречаются пустые и пробельные значения.
-        has_filled_email = Client.emails.any(func.length(func.trim(Email.email)) > 0)
+        # Email.email — обязательное нормализованное поле, поэтому достаточно
+        # проверить непустое значение. Функции trim/length внутри relationship.any
+        # на рабочем PostgreSQL приводили к ошибке выполнения запроса.
+        has_filled_email = Client.emails.any(Email.email != "")
         query = query.where(has_filled_email if has_email else ~has_filled_email)
     if has_phone is not None:
         query = query.where(Client.phones.any() if has_phone else ~Client.phones.any())
