@@ -1,5 +1,5 @@
 from io import BytesIO
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -11,6 +11,21 @@ from app.schemas.client import BulkUpdate, ClientDetail, ClientListItem, PagedCl
 from app.services.importer import import_files
 
 router = APIRouter(prefix="/api", tags=["clients"])
+
+MANAGER_ORDER = [
+    "Пашута М.С.", "Пашута М.С. (Ростов)", "Родина", "Родина Е.В. (Ростов)",
+    "Новожилова М.", "Королева Светлана", "Ромащенко Екатерина", "Селянкина Татьяна",
+    "Суркова Н.", "Трошина Лариса", "Шакулова Екатерина", "Антюфеева Яна",
+    "Бабушкина Виктория", "Самойлова", "Андреева Дарья", "Гаина Татьяна",
+    "Гордиенко", "Ермохина Ирина", "Кульченко Лилия", "Никишова Ольга",
+    "Пименова Любовь", "Пирожкова Татьяна", "Стародубцева Полина", "Яицкая Ольга",
+    "СОТРУДНИК АВИАТОРОВ", "СОТРУДНИК АХТУБИНСК", "СОТРУДНИК БАХТУРОВА",
+    "СОТРУДНИК ЕВРОПА", "СОТРУДНИК ИДЕЯ", "СОТРУДНИК ПАРКХАУС",
+    "СОТРУДНИК ПРИВОЗ", "СОТРУДНИК САНВЭЙ", "СОТРУДНИК СТРОЙГРАД",
+    "СОТРУДНИК ТУЛАК", "СОТРУДНИК ЦИТРУС", "СОТРУДНИК ЦУМ",
+    "Существующие сотрудники", "Клишко Ю.Н.", "МАРКЕТПЛЕЙСЫ", "Наш Китай",
+    "Нет менеджера", "Дегтярев Алексей", "Дегтярева Оксана Александровна", "!!!", "<>",
+]
 
 
 @router.get("/health")
@@ -26,7 +41,7 @@ def to_list_item(client: Client, last_import_at=None) -> ClientListItem:
         company=client.company,
         manager=client.manager,
         phone="\n".join(sorted({phone.phone for phone in client.phones})) or None,
-        email=client.emails[0].email if client.emails else None,
+        email="\n".join(sorted({email.email for email in client.emails})) or None,
         trade_place=client.trade_places[0].place if client.trade_places else None,
         birth_date=client.birth_date,
         last_import_at=last_import_at,
@@ -38,6 +53,7 @@ def apply_client_filters(
     query,
     *,
     search=None,
+    phone_search=None,
     manager=None,
     company=None,
     price_type=None,
@@ -52,30 +68,26 @@ def apply_client_filters(
 ):
     if search:
         term = f"%{search.lower()}%"
-        query = query.outerjoin(Email).outerjoin(Phone).outerjoin(TradePlace).where(
-            or_(
-                func.lower(Client.name).like(term),
-                func.lower(Client.company).like(term),
-                func.lower(Client.contact_person).like(term),
-                func.lower(Client.director).like(term),
-                func.lower(Client.client_source).like(term),
-                func.lower(Client.buyer_type).like(term),
-                func.lower(Client.counterparty_type).like(term),
-                func.lower(Email.email).like(term),
-                Phone.phone.like(term),
-                func.lower(TradePlace.place).like(term),
-            )
-        )
+        query = query.where(func.lower(Client.name).like(term))
+    if phone_search:
+        query = query.where(Client.phones.any(Phone.phone == phone_search.strip()))
     if manager:
-        query = query.where(Client.manager == manager)
+        include_empty_manager = "Нет менеджера" in manager
+        selected_managers = [value for value in manager if value != "Нет менеджера"]
+        manager_conditions = []
+        if selected_managers:
+            manager_conditions.append(Client.manager.in_(selected_managers))
+        if include_empty_manager:
+            manager_conditions.append(or_(Client.manager.is_(None), Client.manager == ""))
+        query = query.where(or_(*manager_conditions))
     if company:
         query = query.where(Client.company == company)
     if price_type:
-        query = query.where(Client.price_type == price_type)
+        query = query.where(Client.price_type.in_(price_type))
     if buyer_type:
-        query = query.where(Client.buyer_type == buyer_type)
+        query = query.where(Client.buyer_type.in_(buyer_type))
     if counterparty_type:
-        query = query.where(Client.counterparty_type == counterparty_type)
+        query = query.where(Client.counterparty_type.in_(counterparty_type))
     if trade_place:
         query = query.where(Client.trade_places.any(TradePlace.place == trade_place))
     if has_email is not None:
@@ -97,11 +109,12 @@ def clients(
     page: int = 1,
     page_size: str = "100",
     search: str | None = None,
-    manager: str | None = None,
+    phone_search: str | None = None,
+    manager: list[str] | None = Query(None),
     company: str | None = None,
-    price_type: str | None = None,
-    buyer_type: str | None = None,
-    counterparty_type: str | None = None,
+    price_type: list[str] | None = Query(None),
+    buyer_type: list[str] | None = Query(None),
+    counterparty_type: list[str] | None = Query(None),
     trade_place: str | None = None,
     has_email: bool | None = None,
     has_phone: bool | None = None,
@@ -121,6 +134,7 @@ def clients(
     filtered_ids = apply_client_filters(
         select(Client.id),
         search=search,
+        phone_search=phone_search,
         manager=manager,
         company=company,
         price_type=price_type,
@@ -164,9 +178,14 @@ def clients(
 
 @router.get("/clients-filter-options")
 def client_filter_options(db: Session = Depends(get_db)):
-    managers = db.scalars(
+    managers_from_db = db.scalars(
         select(Client.manager).where(Client.manager.is_not(None), Client.manager != "").distinct().order_by(Client.manager)
     ).all()
+    manager_rank = {manager: index for index, manager in enumerate(MANAGER_ORDER)}
+    managers = sorted(
+        set(managers_from_db) | {"Нет менеджера"},
+        key=lambda manager: (manager_rank.get(manager, len(MANAGER_ORDER)), manager.casefold()),
+    )
     price_types = db.scalars(
         select(Client.price_type).where(Client.price_type.is_not(None), Client.price_type != "").distinct().order_by(Client.price_type)
     ).all()
@@ -317,11 +336,12 @@ def bulk_delete(ids: str, db: Session = Depends(get_db)):
 def export_clients(
     db: Session = Depends(get_db),
     search: str | None = None,
-    manager: str | None = None,
+    phone_search: str | None = None,
+    manager: list[str] | None = Query(None),
     company: str | None = None,
-    price_type: str | None = None,
-    buyer_type: str | None = None,
-    counterparty_type: str | None = None,
+    price_type: list[str] | None = Query(None),
+    buyer_type: list[str] | None = Query(None),
+    counterparty_type: list[str] | None = Query(None),
     trade_place: str | None = None,
     has_email: bool | None = None,
     has_phone: bool | None = None,
@@ -342,6 +362,7 @@ def export_clients(
     filtered_ids = apply_client_filters(
         select(Client.id),
         search=search,
+        phone_search=phone_search,
         manager=manager,
         company=company,
         price_type=price_type,
@@ -369,7 +390,7 @@ def export_clients(
                 client.company or "",
                 client.manager or "",
                 "\n".join(sorted({phone.phone for phone in client.phones})),
-                client.emails[0].email if client.emails else "",
+                "\n".join(sorted({email.email for email in client.emails})),
                 client.trade_places[0].place if client.trade_places else "",
                 str(client.birth_date or ""),
                 client.client_source or "",
