@@ -1,7 +1,7 @@
 from io import BytesIO
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 from starlette.concurrency import run_in_threadpool
 import xlsxwriter
@@ -271,45 +271,47 @@ def import_issues(import_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/logs")
-def logs(db: Session = Depends(get_db), limit: int = 500):
-    limit = min(max(limit, 1), 2000)
-    # Сначала ограничиваем журнал по индексированному PK. Сортировка результата
-    # JOIN по Import.id заставляла PostgreSQL сканировать и сортировать всю
-    # историю import_issues и на больших базах приводила к nginx 504.
-    import_issues = db.scalars(select(ImportIssue).order_by(ImportIssue.id.desc()).limit(limit)).all()
-    import_ids = {issue.import_id for issue in import_issues}
-    imports_by_id = {
-        import_record.id: import_record
-        for import_record in db.scalars(select(Import).where(Import.id.in_(import_ids))).all()
-    } if import_ids else {}
-    audit_rows = db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)).all()
-    items = [
+def logs(db: Session = Depends(get_db)):
+    imports = db.scalars(
+        select(Import).where(~Import.log_hidden).order_by(Import.id.desc()).limit(100)
+    ).all()
+    import_ids = [item.id for item in imports]
+    first_errors: dict[int, str] = {}
+    if import_ids:
+        errors = db.execute(
+            select(ImportIssue.import_id, ImportIssue.message)
+            .where(ImportIssue.import_id.in_(import_ids), ImportIssue.level == "error")
+            .order_by(ImportIssue.id)
+        ).all()
+        for import_id, message in errors:
+            first_errors.setdefault(import_id, message)
+    return [
         {
-            "id": f"import-{issue.id}",
-            "created_at": imports_by_id[issue.import_id].imported_at,
+            "id": f"import-{item.id}",
+            "created_at": item.imported_at,
             "source": "Импорт",
-            "level": issue.level,
-            "process": imports_by_id[issue.import_id].file_name,
-            "row_number": issue.row_number,
-            "message": issue.message,
-        }
-        for issue in import_issues
-        if issue.import_id in imports_by_id
-    ]
-    items.extend(
-        {
-            "id": f"audit-{audit.id}",
-            "created_at": audit.created_at,
-            "source": "Операция",
-            "level": "info",
-            "process": audit.action,
+            "level": "error" if item.error_count else "info",
+            "process": item.file_name,
             "row_number": None,
-            "message": audit.payload or "",
+            "message": (
+                f"Найдено строк: {item.rows_count}. Загружено: {item.added_count}. "
+                f"Обновлено: {item.updated_count}. Пропущено: {item.skipped_count}. Ошибок: {item.error_count}."
+                + (f" Ошибка: {first_errors[item.id]}" if item.id in first_errors else "")
+            ),
         }
-        for audit in audit_rows
-    )
-    items.sort(key=lambda item: (item["created_at"] is not None, item["created_at"]), reverse=True)
-    return items[:limit]
+        for item in imports
+    ]
+
+
+@router.delete("/logs")
+def delete_logs(db: Session = Depends(get_db)):
+    # Import нельзя удалять физически: на него ссылаются карточки клиентов.
+    # Поэтому служебные записи скрываем, а собственно события удаляем полностью.
+    hidden = db.execute(update(Import).where(~Import.log_hidden).values(log_hidden=True)).rowcount or 0
+    db.execute(delete(ImportIssue))
+    db.execute(delete(AuditLog))
+    db.commit()
+    return {"deleted": hidden}
 
 @router.post("/clients/bulk")
 def bulk_update(payload: BulkUpdate, db: Session = Depends(get_db)):
