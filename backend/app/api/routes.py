@@ -1,7 +1,7 @@
 from io import BytesIO
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, selectinload
 from starlette.concurrency import run_in_threadpool
 import xlsxwriter
