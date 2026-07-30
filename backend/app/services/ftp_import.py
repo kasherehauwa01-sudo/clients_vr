@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from threading import Lock
 from time import monotonic, sleep
 import traceback
+from typing import Callable, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +17,7 @@ from app.services.import_tasks import import_process_lock
 from app.services.importer import import_files
 
 logger = logging.getLogger("clients.import")
+T = TypeVar("T")
 _state_lock = Lock()
 _run_lock = Lock()
 _state = {
@@ -114,6 +116,34 @@ def _connect(settings: FtpSettings) -> tuple[FTP, str]:
     return ftp, directory
 
 
+def _close_ftp(ftp: FTP | None) -> None:
+    if not ftp:
+        return
+    try:
+        ftp.quit()
+    except Exception:
+        ftp.close()
+
+
+def _ftp_operation(settings: FtpSettings, description: str, operation: Callable[[FTP], T], attempts: int = 3) -> T:
+    """Выполняет короткую FTP-операцию на свежем соединении с повторами."""
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        ftp = None
+        try:
+            ftp, _ = _connect(settings)
+            return operation(ftp)
+        except Exception as error:
+            last_error = error
+            logger.exception("FTP: %s, попытка %s/%s", description, attempt, attempts)
+            if attempt < attempts:
+                sleep(2 ** attempt)
+        finally:
+            _close_ftp(ftp)
+    assert last_error is not None
+    raise last_error
+
+
 def select_xls_files(names: list[str]) -> list[str]:
     """Возвращает только необработанные XLS в стабильном последовательном порядке."""
     return sorted(
@@ -164,22 +194,27 @@ def _record_event(filename: str, size: int, status: str, started: float, result=
         db.commit()
 
 
-def _process_file(ftp: FTP, filename: str) -> bool:
+def _process_file(settings: FtpSettings, filename: str) -> bool:
     started = monotonic()
     size = 0
+    result = None
     try:
-        try:
-            size = ftp.size(filename) or 0
-        except error_perm:
-            # Некоторые FTP-серверы запрещают SIZE, целостность в этом случае
-            # дополнительно подтверждается успешным завершением RETR.
-            logger.warning("FTP: сервер не вернул размер файла %s", filename)
         _set_state(stage=f"Скачивание файла {filename}…")
-        logger.info("FTP: скачивание %s, размер=%s", filename, size)
         with TemporaryDirectory(prefix="clients-ftp-") as directory:
             path = Path(directory) / Path(filename).name
-            with path.open("wb") as target:
-                ftp.retrbinary(f"RETR {filename}", target.write)
+
+            def download(ftp: FTP) -> int:
+                try:
+                    expected_size = ftp.size(filename) or 0
+                except error_perm:
+                    expected_size = 0
+                    logger.warning("FTP: сервер не вернул размер файла %s", filename)
+                logger.info("FTP: скачивание %s, размер=%s", filename, expected_size)
+                with path.open("wb") as target:
+                    ftp.retrbinary(f"RETR {filename}", target.write)
+                return expected_size
+
+            size = _ftp_operation(settings, f"скачивание {filename}", download)
             downloaded = path.stat().st_size
             if size and downloaded != size:
                 raise IOError(f"Файл скачан не полностью: ожидалось {size}, получено {downloaded}")
@@ -189,7 +224,15 @@ def _process_file(ftp: FTP, filename: str) -> bool:
                 result = import_files(db, [(Path(filename).name, path.read_bytes())])
             if result.errors:
                 raise RuntimeError(f"Импорт завершён с ошибками: {result.errors}")
-        ftp.delete(filename)
+
+        def delete_imported(ftp: FTP) -> None:
+            names = ftp.nlst()
+            if not any(name == filename or Path(name).name == Path(filename).name for name in names):
+                logger.info("FTP: файл %s уже отсутствует; удаление ранее завершилось на сервере", filename)
+                return
+            ftp.delete(filename)
+
+        _ftp_operation(settings, f"удаление {filename}", delete_imported)
         logger.info("FTP: файл удалён после успешного импорта: %s", filename)
         _record_event(filename, size, "Успешно", started, result=result)
         return True
@@ -200,11 +243,20 @@ def _process_file(ftp: FTP, filename: str) -> bool:
             source = Path(filename)
             failed_name = str(source.with_name(f"error_{source.name}")).replace("\\", "/")
             try:
-                ftp.rename(filename, failed_name)
+                def rename_failed(ftp: FTP) -> None:
+                    names = ftp.nlst()
+                    source_exists = any(name == filename or Path(name).name == source.name for name in names)
+                    failed_exists = any(name == failed_name or Path(name).name == Path(failed_name).name for name in names)
+                    if failed_exists and not source_exists:
+                        return
+                    if source_exists:
+                        ftp.rename(filename, failed_name)
+
+                _ftp_operation(settings, f"переименование {filename}", rename_failed)
                 logger.info("FTP: файл переименован %s -> %s", filename, failed_name)
             except Exception:
                 logger.exception("FTP: не удалось переименовать %s", filename)
-        _record_event(filename, size, "Ошибка", started, error=full_error)
+        _record_event(filename, size, "Ошибка", started, result=result, error=full_error)
         return False
 
 
@@ -223,6 +275,8 @@ def run_ftp_import(*, retry_when_empty: bool = False) -> dict:
                 _set_state(connection_status="connected", last_successful_check=datetime.utcnow().isoformat(), stage="Поиск файлов…")
                 names = ftp.nlst()
                 files = select_xls_files(names)
+                _close_ftp(ftp)
+                ftp = None
                 _set_state(found_files=len(files), stage=f"Найдено файлов: {len(files)}")
                 logger.info("FTP: найдено XLS-файлов: %s", len(files))
                 if files:
@@ -231,7 +285,7 @@ def run_ftp_import(*, retry_when_empty: bool = False) -> dict:
                     success = failed = 0
                     try:
                         for index, filename in enumerate(files, start=1):
-                            ok = _process_file(ftp, filename)
+                            ok = _process_file(settings, filename)
                             success += int(ok); failed += int(not ok)
                             _set_state(processed_files=index, successful_files=success, failed_files=failed)
                     finally:
@@ -250,11 +304,7 @@ def run_ftp_import(*, retry_when_empty: bool = False) -> dict:
                 _set_state(connection_status=connection_status, last_error=full_error)
                 _record_event("Проверка FTP", 0, "Ошибка", attempt_started, error=full_error)
             finally:
-                if ftp:
-                    try:
-                        ftp.quit()
-                    except Exception:
-                        ftp.close()
+                _close_ftp(ftp)
             if not retry_when_empty or attempt == settings.max_attempts:
                 break
             _set_state(stage=f"Файлы не найдены. Попытка {attempt}/{settings.max_attempts}; ожидание {settings.retry_minutes} мин.")
