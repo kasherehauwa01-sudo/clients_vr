@@ -1,4 +1,5 @@
 from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -8,6 +9,7 @@ from app.api.routes import router
 from app.core.config import get_settings
 from app.db.session import Base, engine
 import app.models.entities  # noqa: F401
+from app.services.ftp_scheduler import start_ftp_scheduler, stop_ftp_scheduler
 
 settings = get_settings()
 base_path = settings.normalized_base_path
@@ -33,7 +35,14 @@ class SpaStaticFiles(StaticFiles):
         return response
 
 
-app = FastAPI(title=settings.app_name, root_path=base_path)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_ftp_scheduler()
+    yield
+    stop_ftp_scheduler()
+
+
+app = FastAPI(title=settings.app_name, root_path=base_path, lifespan=lifespan)
 app.add_middleware(PrefixStripMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(router)
