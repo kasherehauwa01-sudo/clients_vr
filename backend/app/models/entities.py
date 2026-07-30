@@ -96,6 +96,20 @@ class ImportIssue(Base):
     message: Mapped[str] = mapped_column(Text)
 
 
+class FtpImportEvent(Base):
+    __tablename__ = "ftp_import_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    file_name: Mapped[str] = mapped_column(String(255), index=True)
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    added_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

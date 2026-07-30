@@ -12,3 +12,4 @@ email-validator==2.2.0
 XlsxWriter==3.2.0
 psycopg[binary]==3.2.3
 alembic==1.14.0
+APScheduler==3.10.4

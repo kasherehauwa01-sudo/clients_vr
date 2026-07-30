@@ -7,9 +7,11 @@ from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 import xlsxwriter
 from app.db.session import get_db
-from app.models.entities import AuditLog, Client, ClientStatus, Email, Import, ImportIssue, Phone, TradePlace
+from app.models.entities import AuditLog, Client, ClientStatus, Email, FtpImportEvent, Import, ImportIssue, Phone, TradePlace
 from app.schemas.client import BulkUpdate, ClientDetail, ClientListItem, PagedClients
 from app.services.import_tasks import create_import_task, get_import_task, run_import_task
+from app.services.ftp_import import get_ftp_settings, get_ftp_status, mark_ftp_pending, run_ftp_import, save_ftp_settings, test_connection
+from app.services.ftp_scheduler import refresh_ftp_schedule
 
 router = APIRouter(prefix="/api", tags=["clients"])
 import_logger = logging.getLogger("clients.import")
@@ -282,7 +284,7 @@ def import_issues(import_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/logs")
-def logs(db: Session = Depends(get_db)):
+def logs(source: str | None = None, db: Session = Depends(get_db)):
     imports = db.scalars(
         select(Import).where(~Import.log_hidden).order_by(Import.id.desc()).limit(100)
     ).all()
@@ -296,7 +298,7 @@ def logs(db: Session = Depends(get_db)):
         ).all()
         for import_id, message in errors:
             first_errors.setdefault(import_id, message)
-    return [
+    items = [
         {
             "id": f"import-{item.id}",
             "created_at": item.imported_at,
@@ -312,6 +314,21 @@ def logs(db: Session = Depends(get_db)):
         }
         for item in imports
     ]
+    ftp_events = db.scalars(select(FtpImportEvent).order_by(FtpImportEvent.id.desc()).limit(100)).all()
+    items.extend({
+        "id": f"ftp-{item.id}", "created_at": item.created_at, "source": "FTP",
+        "level": "error" if item.status == "Ошибка" else "info", "process": item.file_name,
+        "row_number": None,
+        "message": (
+            f"Размер: {item.file_size} байт. Загружено: {item.added_count}. Обновлено: {item.updated_count}. "
+            f"Пропущено: {item.skipped_count}. Длительность: {item.duration_seconds} сек. Статус: {item.status}."
+            + (f" Ошибка: {item.error}" if item.error else "")
+        ),
+    } for item in ftp_events)
+    if source:
+        items = [item for item in items if item["source"].lower() == source.lower()]
+    items.sort(key=lambda item: item["created_at"], reverse=True)
+    return items[:100]
 
 
 @router.delete("/logs")
@@ -321,8 +338,46 @@ def delete_logs(db: Session = Depends(get_db)):
     hidden = db.execute(update(Import).where(~Import.log_hidden).values(log_hidden=True)).rowcount or 0
     db.execute(delete(ImportIssue))
     db.execute(delete(AuditLog))
+    db.execute(delete(FtpImportEvent))
     db.commit()
     return {"deleted": hidden}
+
+
+@router.get("/ftp/settings")
+def ftp_settings():
+    settings = get_ftp_settings().model_dump(exclude={"password"})
+    settings["password"] = ""
+    settings["password_configured"] = bool(get_ftp_settings().password)
+    return settings
+
+
+@router.put("/ftp/settings")
+def update_ftp_settings(payload: dict):
+    settings = save_ftp_settings(payload)
+    refresh_ftp_schedule()
+    return {**settings.model_dump(exclude={"password"}), "password": "", "password_configured": bool(settings.password)}
+
+
+@router.get("/ftp/status")
+def ftp_status():
+    return get_ftp_status()
+
+
+@router.post("/ftp/test")
+def ftp_test():
+    try:
+        return test_connection()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Не удалось подключиться к FTP: {error}") from error
+
+
+@router.post("/ftp/run")
+def ftp_run(background_tasks: BackgroundTasks):
+    if get_ftp_status()["running"]:
+        raise HTTPException(status_code=409, detail="Автозагрузка уже выполняется")
+    mark_ftp_pending()
+    background_tasks.add_task(run_ftp_import, retry_when_empty=False)
+    return {"status": "accepted"}
 
 @router.post("/clients/bulk")
 def bulk_update(payload: BulkUpdate, db: Session = Depends(get_db)):

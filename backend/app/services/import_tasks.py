@@ -9,6 +9,7 @@ from app.services.importer import ImportSummary, import_files
 
 _tasks: dict[str, dict] = {}
 _lock = Lock()
+import_process_lock = Lock()
 
 
 def create_import_task(files: list[tuple[str, bytes]]) -> str:
@@ -43,6 +44,10 @@ def run_import_task(task_id: str, files: list[tuple[str, bytes]]) -> None:
                 status="running", stage=stage, progress=min(percent, 99), processed=processed, total=total
             )
 
+    if not import_process_lock.acquire(blocking=False):
+        with _lock:
+            _tasks[task_id].update(status="failed", stage="Ошибка", error="Другой импорт уже выполняется")
+        return
     try:
         with SessionLocal() as db:
             result: ImportSummary = import_files(db, files, progress=progress)
@@ -62,3 +67,5 @@ def run_import_task(task_id: str, files: list[tuple[str, bytes]]) -> None:
                 error=str(error).strip() or error.__class__.__name__,
                 duration=round(monotonic() - started, 3),
             )
+    finally:
+        import_process_lock.release()
