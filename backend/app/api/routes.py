@@ -1,7 +1,7 @@
 from io import BytesIO
 import logging
 from time import monotonic
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
@@ -12,9 +12,36 @@ from app.schemas.client import BulkUpdate, ClientDetail, ClientListItem, PagedCl
 from app.services.import_tasks import create_import_task, get_import_task, run_import_task
 from app.services.ftp_import import get_ftp_settings, get_ftp_status, mark_ftp_pending, run_ftp_import, save_ftp_settings, test_connection
 from app.services.ftp_scheduler import refresh_ftp_schedule
+from app.services.settings_auth import COOKIE_NAME, authenticate_settings, is_settings_authenticated, logout_settings
 
 router = APIRouter(prefix="/api", tags=["clients"])
 import_logger = logging.getLogger("clients.import")
+
+
+def require_settings_auth(clients_settings_session: str | None = Cookie(None)) -> None:
+    if not is_settings_authenticated(clients_settings_session):
+        raise HTTPException(status_code=401, detail="Введите пароль для доступа к настройкам")
+
+
+@router.post("/settings/auth")
+def settings_login(payload: dict, response: Response):
+    token = authenticate_settings(str(payload.get("password", "")))
+    if token is None:
+        raise HTTPException(status_code=401, detail="Неверный пароль")
+    response.set_cookie(COOKIE_NAME, token, httponly=True, secure=True, samesite="strict", max_age=12 * 60 * 60)
+    return {"authenticated": True}
+
+
+@router.get("/settings/auth")
+def settings_auth_status(clients_settings_session: str | None = Cookie(None)):
+    return {"authenticated": is_settings_authenticated(clients_settings_session)}
+
+
+@router.delete("/settings/auth")
+def settings_logout(response: Response, clients_settings_session: str | None = Cookie(None)):
+    logout_settings(clients_settings_session)
+    response.delete_cookie(COOKIE_NAME)
+    return {"authenticated": False}
 
 MANAGER_ORDER = [
     "Пашута М.С.", "Пашута М.С. (Ростов)", "Родина", "Родина Е.В. (Ростов)",
@@ -249,7 +276,7 @@ def client_detail(client_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/imports")
-async def upload_import(background_tasks: BackgroundTasks, files: list[UploadFile] = File(...)):
+async def upload_import(background_tasks: BackgroundTasks, files: list[UploadFile] = File(...), _: None = Depends(require_settings_auth)):
     started = monotonic()
     import_logger.info("Начало загрузки API: файлов=%s", len(files))
     payload = [(file.filename or "import.xlsx", await file.read()) for file in files]
@@ -264,7 +291,7 @@ async def upload_import(background_tasks: BackgroundTasks, files: list[UploadFil
 
 
 @router.get("/imports/tasks/{task_id}")
-def import_task(task_id: str):
+def import_task(task_id: str, _: None = Depends(require_settings_auth)):
     task = get_import_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Задача импорта не найдена")
@@ -272,19 +299,19 @@ def import_task(task_id: str):
 
 
 @router.get("/imports")
-def imports(db: Session = Depends(get_db)):
+def imports(db: Session = Depends(get_db), _: None = Depends(require_settings_auth)):
     return db.scalars(select(Import).order_by(Import.imported_at.desc()).limit(200)).all()
 
 
 @router.get("/imports/{import_id}/issues")
-def import_issues(import_id: int, db: Session = Depends(get_db)):
+def import_issues(import_id: int, db: Session = Depends(get_db), _: None = Depends(require_settings_auth)):
     return db.scalars(select(ImportIssue).where(ImportIssue.import_id == import_id).order_by(ImportIssue.id)).all()
 
 
 
 
 @router.get("/logs")
-def logs(source: str | None = None, db: Session = Depends(get_db)):
+def logs(source: str | None = None, db: Session = Depends(get_db), _: None = Depends(require_settings_auth)):
     imports = db.scalars(
         select(Import).where(~Import.log_hidden).order_by(Import.id.desc()).limit(100)
     ).all()
@@ -332,7 +359,7 @@ def logs(source: str | None = None, db: Session = Depends(get_db)):
 
 
 @router.delete("/logs")
-def delete_logs(db: Session = Depends(get_db)):
+def delete_logs(db: Session = Depends(get_db), _: None = Depends(require_settings_auth)):
     # Import нельзя удалять физически: на него ссылаются карточки клиентов.
     # Поэтому служебные записи скрываем, а собственно события удаляем полностью.
     hidden = db.execute(update(Import).where(~Import.log_hidden).values(log_hidden=True)).rowcount or 0
@@ -344,7 +371,7 @@ def delete_logs(db: Session = Depends(get_db)):
 
 
 @router.get("/ftp/settings")
-def ftp_settings():
+def ftp_settings(_: None = Depends(require_settings_auth)):
     settings = get_ftp_settings().model_dump(exclude={"password"})
     settings["password"] = ""
     settings["password_configured"] = bool(get_ftp_settings().password)
@@ -352,19 +379,19 @@ def ftp_settings():
 
 
 @router.put("/ftp/settings")
-def update_ftp_settings(payload: dict):
+def update_ftp_settings(payload: dict, _: None = Depends(require_settings_auth)):
     settings = save_ftp_settings(payload)
     refresh_ftp_schedule()
     return {**settings.model_dump(exclude={"password"}), "password": "", "password_configured": bool(settings.password)}
 
 
 @router.get("/ftp/status")
-def ftp_status():
+def ftp_status(_: None = Depends(require_settings_auth)):
     return get_ftp_status()
 
 
 @router.post("/ftp/test")
-def ftp_test():
+def ftp_test(_: None = Depends(require_settings_auth)):
     try:
         return test_connection()
     except Exception as error:
@@ -372,7 +399,7 @@ def ftp_test():
 
 
 @router.post("/ftp/run")
-def ftp_run(background_tasks: BackgroundTasks):
+def ftp_run(background_tasks: BackgroundTasks, _: None = Depends(require_settings_auth)):
     if get_ftp_status()["running"]:
         raise HTTPException(status_code=409, detail="Автозагрузка уже выполняется")
     mark_ftp_pending()
@@ -399,8 +426,11 @@ def bulk_delete(
     ids: str | None = None,
     delete_all: bool = Query(False, alias="all"),
     db: Session = Depends(get_db),
+    clients_settings_session: str | None = Cookie(None),
 ):
     if delete_all:
+        if not is_settings_authenticated(clients_settings_session):
+            raise HTTPException(status_code=401, detail="Введите пароль для доступа к настройкам")
         # Связанные телефоны, email и места торговли удаляются на уровне БД
         # благодаря внешним ключам с ON DELETE CASCADE.
         deleted = db.execute(delete(Client)).rowcount or 0

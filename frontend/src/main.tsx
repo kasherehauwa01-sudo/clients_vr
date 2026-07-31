@@ -34,7 +34,7 @@ const BASE_URL = import.meta.env.BASE_URL || '/';
 const API_BASE_URL = trimSlash(import.meta.env.VITE_API_URL || `${BASE_URL}api`);
 
 async function api(path: string, init?: RequestInit) {
-  const response = await fetch(`${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`, init);
+  const response = await fetch(`${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`, { credentials: 'include', ...init });
   if (!response.ok) {
     const body = await response.text();
     if (response.status === 504) throw new Error('Сервис не успел ответить. Повторите попытку через несколько секунд.');
@@ -50,6 +50,9 @@ async function api(path: string, init?: RequestInit) {
 
 function App() {
   const [activeTab, setActiveTab] = useState<MainTab>('registry');
+  const [settingsAuthOpen, setSettingsAuthOpen] = useState(false);
+  const [settingsPassword, setSettingsPassword] = useState('');
+  const [settingsAuthError, setSettingsAuthError] = useState('');
   const [helpTab, setHelpTab] = useState<HelpTab>('features');
   const [clients, setClients] = useState<Client[]>([]);
   const [total, setTotal] = useState(0);
@@ -172,6 +175,33 @@ function App() {
   useEffect(() => { api('/clients-filter-options').then(setFilterOptions); }, []);
   useEffect(() => { if (activeTab === 'settings') loadLogs(); }, [activeTab]);
 
+  const openSettings = async () => {
+    try {
+      const status = await api('/settings/auth');
+      if (status.authenticated) { setActiveTab('settings'); return; }
+    } catch { /* Форма авторизации сама покажет результат следующей попытки. */ }
+    setSettingsPassword('');
+    setSettingsAuthError('');
+    setSettingsAuthOpen(true);
+  };
+
+  const unlockSettings = async (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      await api('/settings/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: settingsPassword }) });
+      setSettingsAuthOpen(false);
+      setSettingsPassword('');
+      setActiveTab('settings');
+    } catch (error) {
+      setSettingsAuthError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const lockSettings = async () => {
+    await api('/settings/auth', { method: 'DELETE' });
+    setActiveTab('registry');
+  };
+
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
     const fileNames = [...files].map(file => file.name).join(', ');
@@ -207,11 +237,12 @@ function App() {
     <input ref={fileInputRef} className="hidden-file" type="file" multiple accept=".xls,.xlsx" onChange={e => upload(e.target.files)} />
     <ClientsHeader
       activeTab={activeTab}
-      onTabChange={setActiveTab}
+      onTabChange={tab => tab === 'settings' ? openSettings() : setActiveTab(tab)}
       query={q}
       onOpenFilters={() => setFiltersOpen(true)}
     />
-    {activeTab === 'settings' ? <Settings active={helpTab} onChange={setHelpTab} onUpload={() => fileInputRef.current?.click()} onDeleteAllClients={deleteAllClients} notice={notice} uploading={uploading} logs={logs} logsLoading={logsLoading} logSource={logSource} onRefreshLogs={() => loadLogs()} onShowAllLogs={showAllLogs} onOpenFtpLogs={openFtpLogs} onDeleteLogs={deleteLogs} /> : <>
+    {settingsAuthOpen && <div className="auth-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSettingsAuthOpen(false); }}><form className="auth-dialog" role="dialog" aria-modal="true" aria-labelledby="auth-title" onSubmit={unlockSettings}><h2 id="auth-title">Доступ к настройкам</h2><p>Введите пароль, чтобы открыть защищённый раздел.</p><label>Пароль<input autoFocus type="password" value={settingsPassword} onChange={event => setSettingsPassword(event.target.value)} autoComplete="current-password" /></label>{settingsAuthError && <p className="auth-error" role="alert">{settingsAuthError}</p>}<div className="auth-actions"><button type="button" className="tonal" onClick={() => setSettingsAuthOpen(false)}>Отмена</button><button type="submit" className="primary-action">Войти</button></div></form></div>}
+    {activeTab === 'settings' ? <Settings active={helpTab} onChange={setHelpTab} onLock={lockSettings} onUpload={() => fileInputRef.current?.click()} onDeleteAllClients={deleteAllClients} notice={notice} uploading={uploading} logs={logs} logsLoading={logsLoading} logSource={logSource} onRefreshLogs={() => loadLogs()} onShowAllLogs={showAllLogs} onOpenFtpLogs={openFtpLogs} onDeleteLogs={deleteLogs} /> : <>
       {notice && <div className="notice">{notice}</div>}
       <div className="workspace"><section className="content-area"><div className="registry-summary"><span>В реестре: <b>{total}</b> строк</span><div className="summary-actions">{checkedIds.size > 0 && <button className="danger-action" type="button" onClick={deleteCheckedClients}>Удалить выбранные ({checkedIds.size})</button>}<a className="button tonal" href={exportUrl}>Скачать</a></div></div><section className="table"><table><thead><tr><th className="check-cell"><input type="checkbox" aria-label="Выбрать все строки на странице" checked={allVisibleChecked} onChange={toggleVisibleCheck} /></th><th>Наименование</th><th>Фирма</th><th>Менеджер</th><th>Телефоны</th><th>Email</th></tr></thead><tbody>{clients.map(c => <tr key={c.id} className={[c.status === 'out_of_stock' ? 'muted-row' : '', selectedClientId === c.id ? 'selected-row' : '', checkedIds.has(c.id) ? 'checked-row' : ''].filter(Boolean).join(' ')} aria-selected={selectedClientId === c.id} onClick={() => { setSelectedClientId(c.id); api(`/clients/${c.id}`).then(setDetail); }}><td className="check-cell"><input type="checkbox" aria-label={`Выбрать ${c.name}`} checked={checkedIds.has(c.id)} onClick={event => event.stopPropagation()} onChange={() => toggleClientCheck(c.id)} /></td><td><b>{c.name}</b></td><td>{c.company}</td><td>{c.manager}</td><td>{c.phone}</td><td>{c.email}</td></tr>)}</tbody></table><footer><button disabled={page === 1} onClick={() => setPage(page - 1)}>Назад</button><span>{page} / {totalPages} · {total} записей</span><label className="page-size">Строк на странице<select value={pageSize} onChange={e => { setPageSize(e.target.value); setPage(1); }}><option value="100">100</option><option value="200">200</option><option value="300">300</option><option value="400">400</option><option value="500">500</option><option value="all">Все</option></select></label><button disabled={pageSize === 'all' || page * pageSizeNumber >= total} onClick={() => setPage(page + 1)}>Вперед</button></footer></section></section></div>      {filtersOpen && <FilterDialog q={q} phoneQuery={phoneQuery} hasPhone={hasPhone} hasEmail={hasEmail} manager={manager} priceType={priceType} buyerType={buyerType} counterpartyType={counterpartyType} options={filterOptions} onQ={setQ} onPhoneQuery={setPhoneQuery} onHasPhone={setHasPhone} onHasEmail={setHasEmail} onManager={setManager} onPriceType={setPriceType} onBuyerType={setBuyerType} onCounterpartyType={setCounterpartyType} onReset={resetFilters} onClose={() => { setFiltersOpen(false); setPage(1); }} />}
       {detail && <div className="drawer-backdrop" onClick={() => setDetail(null)}><aside className="drawer" onClick={event => event.stopPropagation()}><button className="drawer-close" type="button" onClick={() => setDetail(null)}>×</button><ClientCard c={detail} /></aside></div>}
@@ -248,10 +279,10 @@ function MultiFilter({ title, values, selected, onChange, searchable = false }: 
 function FilterDialog(props: { q: string; phoneQuery: string; hasPhone: PresenceFilter; hasEmail: PresenceFilter; manager: string[]; priceType: string[]; buyerType: string[]; counterpartyType: string[]; options: FilterOptions; onQ: (value: string) => void; onPhoneQuery: (value: string) => void; onHasPhone: (value: PresenceFilter) => void; onHasEmail: (value: PresenceFilter) => void; onManager: (value: string[]) => void; onPriceType: (value: string[]) => void; onBuyerType: (value: string[]) => void; onCounterpartyType: (value: string[]) => void; onReset: () => void; onClose: () => void }) {
   return <div className="filter-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) props.onClose(); }}><section className="filter-dialog" role="dialog" aria-modal="true" aria-labelledby="filter-title"><header><div><p className="eyebrow">Реестр</p><h2 id="filter-title">Поиск и фильтры</h2></div><button className="dialog-close" type="button" aria-label="Закрыть" onClick={props.onClose}>×</button></header><div className="filter-fields"><label>Поиск по наименованию<input autoFocus type="search" value={props.q} onChange={event => props.onQ(event.target.value)} placeholder="Введите наименование" /></label><label>Поиск по номеру телефона<input type="search" inputMode="tel" value={props.phoneQuery} onChange={event => props.onPhoneQuery(event.target.value)} placeholder="Введите номер телефона" /></label><label>Телефон<select value={props.hasPhone} onChange={event => props.onHasPhone(event.target.value as PresenceFilter)}><option value="true">Да</option><option value="false">Нет</option><option value="">Все</option></select></label><label>Email<select value={props.hasEmail} onChange={event => props.onHasEmail(event.target.value as PresenceFilter)}><option value="true">Да</option><option value="false">Нет</option><option value="">Все</option></select></label></div><div className="filter-groups"><MultiFilter title="Тип цены" values={props.options.price_types} selected={props.priceType} onChange={props.onPriceType} /><MultiFilter title="Вид покупателя" values={props.options.buyer_types} selected={props.buyerType} onChange={props.onBuyerType} /><MultiFilter title="Вид контрагента" values={props.options.counterparty_types} selected={props.counterpartyType} onChange={props.onCounterpartyType} /><MultiFilter title="Менеджер" values={props.options.managers} selected={props.manager} onChange={props.onManager} searchable /></div><footer className="filter-actions"><button className="tonal" type="button" onClick={props.onReset}>Сбросить</button><button className="primary-action" type="button" onClick={props.onClose}>Показать результаты</button></footer></section></div>;
 }
-function Settings({ active, onChange, onUpload, onDeleteAllClients, notice, uploading, logs, logsLoading, logSource, onRefreshLogs, onShowAllLogs, onOpenFtpLogs, onDeleteLogs }: { active: HelpTab; onChange: (tab: HelpTab) => void; onUpload: () => void; onDeleteAllClients: () => void; notice: string; uploading: boolean; logs: LogEntry[]; logsLoading: boolean; logSource: string; onRefreshLogs: () => void; onShowAllLogs: () => void; onOpenFtpLogs: () => void; onDeleteLogs: () => void }) {
+function Settings({ active, onChange, onLock, onUpload, onDeleteAllClients, notice, uploading, logs, logsLoading, logSource, onRefreshLogs, onShowAllLogs, onOpenFtpLogs, onDeleteLogs }: { active: HelpTab; onChange: (tab: HelpTab) => void; onLock: () => void; onUpload: () => void; onDeleteAllClients: () => void; notice: string; uploading: boolean; logs: LogEntry[]; logsLoading: boolean; logSource: string; onRefreshLogs: () => void; onShowAllLogs: () => void; onOpenFtpLogs: () => void; onDeleteLogs: () => void }) {
   const updateCommand = '/var/www/html/vr/clients/update.sh';
   const copyUpdateCommand = async () => navigator.clipboard.writeText(updateCommand);
-  return <section className="help card"><div className="settings-heading"><h2>Настройки</h2><div className="settings-actions"><button className="danger-action" type="button" disabled={uploading} onClick={onDeleteAllClients}>Удалить все строки</button><button className="primary-action" disabled={uploading} onClick={onUpload}>{uploading ? 'Загрузка…' : 'Загрузить XLS'}</button></div></div>{notice && <div className="notice" role="status">{notice}</div>}<div className="subtabs"><button className={active === 'features' ? 'selected' : ''} onClick={() => onChange('features')}>Описание и возможности</button><button className={active === 'manual' ? 'selected' : ''} onClick={() => onChange('manual')}>Инструкция для пользователя</button><button className={active === 'autoload' ? 'selected' : ''} onClick={() => onChange('autoload')}>Автозагрузка</button><button className={active === 'journal' ? 'selected' : ''} onClick={() => onChange('journal')}>Журнал загрузки</button></div>{active !== 'journal' && active !== 'autoload' && <div className="copy-row"><textarea readOnly value={updateCommand} aria-label="Команда обновления проекта" /><button title="Копировать в буфер обмена" onClick={copyUpdateCommand}>📋</button></div>}{active === 'features' ? <div><h3>Описание и возможности</h3><ul><li>Импорт клиентов из файлов Excel `.xls` и `.xlsx`.</li><li>Поиск и фильтрация реестра клиентов.</li><li>Ручная и автоматическая загрузка XLS по FTP.</li></ul></div> : active === 'manual' ? <div><h3>Инструкция для пользователя</h3><ol><li>Для ручной загрузки нажмите «Загрузить XLS».</li><li>Для настройки FTP откройте раздел «Автозагрузка».</li><li>Кликните по строке реестра, чтобы открыть карточку клиента.</li></ol></div> : active === 'autoload' ? <FtpSettingsPanel onOpenLogs={onOpenFtpLogs} /> : <UploadJournal logs={logs} loading={logsLoading} source={logSource} onRefresh={onRefreshLogs} onShowAll={onShowAllLogs} onDelete={onDeleteLogs} />}</section>;
+  return <section className="help card"><div className="settings-heading"><h2>Настройки</h2><div className="settings-actions"><button className="tonal" type="button" onClick={onLock}>Закрыть настройки</button><button className="danger-action" type="button" disabled={uploading} onClick={onDeleteAllClients}>Удалить все строки</button><button className="primary-action" disabled={uploading} onClick={onUpload}>{uploading ? 'Загрузка…' : 'Загрузить XLS'}</button></div></div>{notice && <div className="notice" role="status">{notice}</div>}<div className="subtabs"><button className={active === 'features' ? 'selected' : ''} onClick={() => onChange('features')}>Описание и возможности</button><button className={active === 'manual' ? 'selected' : ''} onClick={() => onChange('manual')}>Инструкция для пользователя</button><button className={active === 'autoload' ? 'selected' : ''} onClick={() => onChange('autoload')}>Автозагрузка</button><button className={active === 'journal' ? 'selected' : ''} onClick={() => onChange('journal')}>Журнал загрузки</button></div>{active !== 'journal' && active !== 'autoload' && <div className="copy-row"><textarea readOnly value={updateCommand} aria-label="Команда обновления проекта" /><button title="Копировать в буфер обмена" onClick={copyUpdateCommand}>📋</button></div>}{active === 'features' ? <div><h3>Описание и возможности</h3><ul><li>Импорт клиентов из файлов Excel `.xls` и `.xlsx`.</li><li>Поиск и фильтрация реестра клиентов.</li><li>Ручная и автоматическая загрузка XLS по FTP.</li></ul></div> : active === 'manual' ? <div><h3>Инструкция для пользователя</h3><ol><li>Для ручной загрузки нажмите «Загрузить XLS».</li><li>Для настройки FTP откройте раздел «Автозагрузка».</li><li>Кликните по строке реестра, чтобы открыть карточку клиента.</li></ol></div> : active === 'autoload' ? <FtpSettingsPanel onOpenLogs={onOpenFtpLogs} /> : <UploadJournal logs={logs} loading={logsLoading} source={logSource} onRefresh={onRefreshLogs} onShowAll={onShowAllLogs} onDelete={onDeleteLogs} />}</section>;
 }
 
 function FtpSettingsPanel({ onOpenLogs }: { onOpenLogs: () => void }) {
