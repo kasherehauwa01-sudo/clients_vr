@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.api.routes import router
+from app.api.client_directory import router as client_directory_router
 from app.core.config import get_settings
 from app.db.session import Base, engine
 import app.models.entities  # noqa: F401
@@ -46,6 +47,7 @@ app = FastAPI(title=settings.app_name, root_path=base_path, lifespan=lifespan)
 app.add_middleware(PrefixStripMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(router)
+app.include_router(client_directory_router)
 static_dir = Path("/app/static")
 if static_dir.exists():
     app.mount("/", SpaStaticFiles(directory=str(static_dir), html=True), name="static")
