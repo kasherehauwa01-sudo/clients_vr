@@ -1,11 +1,13 @@
 import json
 import logging
+from pathlib import Path
 from time import monotonic
+from collections.abc import Iterator
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.db.session import get_db
 from app.models.entities import Client, ClientStatus, Phone
@@ -14,6 +16,38 @@ from app.services.client_directory import build_client_record, extract_directory
 
 router = APIRouter(prefix="/api", tags=["calltrack"])
 logger = logging.getLogger(__name__)
+DIRECTORY_BATCH_SIZE = 250
+
+
+def _resident_memory_bytes() -> int:
+    """Возвращает текущий RSS процесса без дополнительных зависимостей."""
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _directory_batch(db: Session, after_id: int) -> tuple[list[Client], float]:
+    started_at = monotonic()
+    clients = db.execute(
+        select(Client)
+        .where(
+            Client.id > after_id,
+            Client.status == ClientStatus.active,
+            Client.name.is_not(None),
+            Client.name != "",
+            Client.phones.any(),
+        )
+        # selectinload исключает декартово произведение phones × emails × places,
+        # а ограниченный batch не удерживает весь справочник в памяти.
+        .options(selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places))
+        .order_by(Client.id)
+        .limit(DIRECTORY_BATCH_SIZE)
+    ).scalars().all()
+    return clients, monotonic() - started_at
 
 
 def json_response(payload: dict, status_code: int = 200, headers: dict[str, str] | None = None) -> Response:
@@ -27,21 +61,69 @@ def json_response(payload: dict, status_code: int = 200, headers: dict[str, str]
 
 @router.get("/get_clients.php")
 def get_clients_directory(db: Session = Depends(get_db)) -> Response:
+    started_at = monotonic()
+    memory_before = _resident_memory_bytes()
     try:
-        clients = db.execute(
-            select(Client)
-            .where(Client.status == ClientStatus.active, Client.name.is_not(None), Client.name != "")
-            .options(joinedload(Client.phones), joinedload(Client.emails), joinedload(Client.trade_places))
-            .order_by(Client.id)
-        ).unique().scalars().all()
-        data = [record for client in clients if (record := build_client_record(client, normalized_phones=True))]
-        return json_response({"status": "success", "data": data, "total": len(data)})
+        first_batch, first_sql_seconds = _directory_batch(db, 0)
     except Exception:
         logger.exception("Не удалось сформировать справочник клиентов для CallTrack")
         return json_response(
             {"status": "error", "message": "Не удалось загрузить справочник клиентов"},
             status_code=500,
         )
+
+    def stream_directory() -> Iterator[bytes]:
+        batch = first_batch
+        sql_seconds = first_sql_seconds
+        clients_count = 0
+        json_bytes = 0
+        formation_seconds = 0.0
+        last_id = 0
+        first_record = True
+        prefix = b'{"status":"success","data":['
+        json_bytes += len(prefix)
+        yield prefix
+        try:
+            while batch:
+                last_id = batch[-1].id
+                batch_is_last = len(batch) < DIRECTORY_BATCH_SIZE
+                for client in batch:
+                    formation_started_at = monotonic()
+                    record = build_client_record(client, normalized_phones=True)
+                    if not record:
+                        formation_seconds += monotonic() - formation_started_at
+                        continue
+                    encoded = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                    chunk = encoded if first_record else b"," + encoded
+                    first_record = False
+                    clients_count += 1
+                    json_bytes += len(chunk)
+                    formation_seconds += monotonic() - formation_started_at
+                    yield chunk
+                # Объекты предыдущей порции больше не нужны. Это удерживает RSS
+                # примерно на уровне одного batch даже для большого справочника.
+                db.expunge_all()
+                if batch_is_last:
+                    batch = []
+                else:
+                    batch, batch_sql_seconds = _directory_batch(db, last_id)
+                    sql_seconds += batch_sql_seconds
+            suffix = f'],"total":{clients_count}}}'.encode("utf-8")
+            json_bytes += len(suffix)
+            yield suffix
+        finally:
+            elapsed = monotonic() - started_at
+            memory_after = _resident_memory_bytes()
+            logger.info(
+                "Clients directory: clients=%s, sql=%.3f s, build=%.3f s, total=%.3f s, json=%s bytes, rss_before=%s, rss_after=%s",
+                clients_count, sql_seconds, formation_seconds, elapsed, json_bytes, memory_before, memory_after,
+            )
+
+    logger.info(
+        "Clients directory: start, batch_size=%s, first_batch=%s, rss_before=%s",
+        DIRECTORY_BATCH_SIZE, len(first_batch), memory_before,
+    )
+    return StreamingResponse(stream_directory(), media_type="application/json; charset=utf-8")
 
 
 @router.get("/client_card.php")

@@ -1,4 +1,5 @@
 import json
+import asyncio
 from types import SimpleNamespace
 
 from app.api.client_directory import get_client_card, get_clients_directory
@@ -14,11 +15,13 @@ class FakeResult:
 
 class FakeSession:
     def __init__(self, rows=None, error: Exception | None = None):
-        self.rows, self.error, self.statement = rows or [], error, None
+        self.rows, self.error, self.statement, self.execute_count = rows or [], error, None, 0
     def execute(self, statement):
         self.statement = statement
         if self.error: raise self.error
-        return FakeResult(self.rows)
+        self.execute_count += 1
+        return FakeResult(self.rows if self.execute_count == 1 else [])
+    def expunge_all(self): pass
 
 
 def client(client_id, name, phones, **values):
@@ -33,7 +36,17 @@ def client(client_id, name, phones, **values):
     return SimpleNamespace(**defaults)
 
 
-def response_json(response): return json.loads(response.body.decode("utf-8"))
+def response_json(response):
+    if hasattr(response, "body"):
+        return json.loads(response.body.decode("utf-8"))
+
+    async def consume_stream() -> bytes:
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.encode("utf-8") if isinstance(chunk, str) else chunk)
+        return b"".join(chunks)
+
+    return json.loads(asyncio.run(consume_stream()).decode("utf-8"))
 
 
 def test_multiple_phones_are_normalized_in_existing_directory() -> None:
@@ -111,13 +124,15 @@ def test_missing_phone_returns_found_false() -> None:
 
 
 def test_existing_list_format_remains_compatible() -> None:
-    response = get_clients_directory(db=FakeSession([client(1, "ООО", ["+79991234567"]) ]))
+    db = FakeSession([client(1, "ООО", ["+79991234567"])])
+    response = get_clients_directory(db=db)
     payload = response_json(response)
     assert response.status_code == 200
     assert payload["status"] == "success"
     assert payload["data"][0]["name"] == "ООО"
     assert payload["data"][0]["phones"] == ["9991234567"]
     assert payload["total"] == 1
+    assert "LIMIT" in str(db.statement).upper()
 
 
 def test_empty_directory_returns_http_200() -> None:
