@@ -55,6 +55,10 @@ def get_client_card(phone: str = "", db: Session = Depends(get_db)) -> Response:
             {"Server-Timing": f"clients-total;dur={total_ms:.1f}"},
         )
     masked = f"******{normalized[-4:]}"
+    # Импорт уже сохраняет российские телефоны в каноническом виде +7XXXXXXXXXX.
+    # Несколько точных вариантов позволяют использовать существующий B-tree
+    # ix_phones_phone и не требуют медленного LIKE либо новой миграции данных.
+    indexed_phone_values = (f"+7{normalized}", f"7{normalized}", f"8{normalized}", normalized)
     normalized_at = monotonic()
     logger.info("Clients card: start phone=%s, normalization=%.1f ms", masked, (normalized_at - started_at) * 1000)
     try:
@@ -62,7 +66,7 @@ def get_client_card(phone: str = "", db: Session = Depends(get_db)) -> Response:
         clients = db.execute(
             select(Client)
             .join(Phone, Phone.client_id == Client.id)
-            .where(Phone.normalized_phone == normalized)
+            .where(Phone.phone.in_(indexed_phone_values))
             .options(joinedload(Client.phones), joinedload(Client.emails), joinedload(Client.trade_places))
             .order_by(Client.id)
         ).unique().scalars().all()

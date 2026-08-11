@@ -61,11 +61,11 @@ def test_phone_in_array_and_among_multiple_values_is_found() -> None:
     assert response_json(response)["data"][0]["phones"] == ["+74951112233", "+79991234567"]
 
 
-def test_card_query_uses_indexed_normalized_phone() -> None:
+def test_card_query_uses_existing_indexed_phone_column() -> None:
     db = FakeSession()
     get_client_card(phone="+7 (999) 123-45-67", db=db)
     sql = str(db.statement)
-    assert "phones.normalized_phone" in sql
+    assert "phones.phone IN" in sql
     assert "LIKE" not in sql.upper()
 
 
