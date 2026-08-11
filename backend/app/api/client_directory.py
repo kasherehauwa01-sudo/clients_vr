@@ -1,5 +1,6 @@
 import json
 import logging
+from time import monotonic
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
@@ -15,11 +16,12 @@ router = APIRouter(prefix="/api", tags=["calltrack"])
 logger = logging.getLogger(__name__)
 
 
-def json_response(payload: dict, status_code: int = 200) -> Response:
+def json_response(payload: dict, status_code: int = 200, headers: dict[str, str] | None = None) -> Response:
     return Response(
         content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
         status_code=status_code,
         media_type="application/json; charset=utf-8",
+        headers=headers,
     )
 
 
@@ -44,19 +46,27 @@ def get_clients_directory(db: Session = Depends(get_db)) -> Response:
 
 @router.get("/client_card.php")
 def get_client_card(phone: str = "", db: Session = Depends(get_db)) -> Response:
+    started_at = monotonic()
     normalized = normalize_directory_phone(phone)
     if normalized is None:
-        return json_response({"status": "error", "message": "Номер должен содержать не менее 10 цифр"}, 422)
+        total_ms = (monotonic() - started_at) * 1000
+        return json_response(
+            {"status": "error", "message": "Номер телефона должен содержать не менее 10 цифр"}, 422,
+            {"Server-Timing": f"clients-total;dur={total_ms:.1f}"},
+        )
     masked = f"******{normalized[-4:]}"
-    logger.info("Запрос карточки клиента: телефон=%s", masked)
+    normalized_at = monotonic()
+    logger.info("Clients card: start phone=%s, normalization=%.1f ms", masked, (normalized_at - started_at) * 1000)
     try:
+        query_started_at = monotonic()
         clients = db.execute(
             select(Client)
             .join(Phone, Phone.client_id == Client.id)
-            .where(Phone.phone.like(f"%{normalized}"))
+            .where(Phone.normalized_phone == normalized)
             .options(joinedload(Client.phones), joinedload(Client.emails), joinedload(Client.trade_places))
             .order_by(Client.id)
         ).unique().scalars().all()
+        query_finished_at = monotonic()
         records = []
         for client in clients:
             normalized_client_phones = extract_directory_phones([item.phone for item in client.phones])
@@ -64,13 +74,32 @@ def get_client_card(phone: str = "", db: Session = Depends(get_db)) -> Response:
                 record = build_client_record(client, normalized_phones=False)
                 if record:
                     records.append(record)
-        logger.info("Карточка клиента: телефон=%s, проверено=%s, совпадений=%s", masked, len(clients), len(records))
+        serialization_started_at = monotonic()
+        payload = {
+            "status": "success", "found": bool(records), "normalized_phone": normalized,
+            "data": records, "total": len(records),
+        }
         if not records:
-            return json_response({
-                "status": "success", "found": False, "data": [],
-                "reason": "Клиент с указанным номером не найден",
-            })
-        return json_response({"status": "success", "found": True, "data": records})
+            payload["reason"] = "Клиент с указанным номером не найден"
+        query_ms = (query_finished_at - query_started_at) * 1000
+        # Кодирование выполняется здесь, чтобы в Server-Timing вошла и сериализация.
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        finished_at = monotonic()
+        serialization_ms = (finished_at - serialization_started_at) * 1000
+        total_ms = (finished_at - started_at) * 1000
+        logger.info(
+            "Clients card: query=%.1f ms, serialization=%.1f ms, total=%.1f ms, matches=%s",
+            query_ms, serialization_ms, total_ms, len(records),
+        )
+        return Response(
+            content=body,
+            media_type="application/json; charset=utf-8",
+            headers={"Server-Timing": f"clients-db;dur={query_ms:.1f}, clients-total;dur={total_ms:.1f}"},
+        )
     except Exception:
         logger.exception("Ошибка поиска карточки клиента: телефон=%s", masked)
-        return json_response({"status": "error", "message": "Не удалось загрузить карточку клиента"}, 500)
+        total_ms = (monotonic() - started_at) * 1000
+        return json_response(
+            {"status": "error", "message": "Не удалось загрузить карточку клиента"}, 500,
+            {"Server-Timing": f"clients-total;dur={total_ms:.1f}"},
+        )

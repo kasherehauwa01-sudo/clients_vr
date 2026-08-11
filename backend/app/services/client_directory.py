@@ -73,7 +73,7 @@ def compact_fields(values: dict) -> dict:
         if key.lower() in SECRET_FIELD_DENYLIST:
             continue
         value = _display_value(value)
-        if value is None or value == "" or value == []:
+        if value is None or value == [] or (isinstance(value, str) and not value.strip()):
             continue
         result[key] = value
     return result
@@ -89,6 +89,7 @@ def build_client_record(client, *, normalized_phones: bool) -> dict | None:
     sms_phones = [phone.phone for phone in client.phones if getattr(phone.type, "value", phone.type) == "sms"]
     fields = compact_fields({
         "Наименование": name,
+        "Телефоны": phones,
         "Тип цены": client.price_type,
         "Менеджер": client.manager,
         "Дата рождения": client.birth_date,

@@ -13,8 +13,10 @@ class FakeResult:
 
 
 class FakeSession:
-    def __init__(self, rows=None, error: Exception | None = None): self.rows, self.error = rows or [], error
+    def __init__(self, rows=None, error: Exception | None = None):
+        self.rows, self.error, self.statement = rows or [], error, None
     def execute(self, statement):
+        self.statement = statement
         if self.error: raise self.error
         return FakeResult(self.rows)
 
@@ -59,6 +61,14 @@ def test_phone_in_array_and_among_multiple_values_is_found() -> None:
     assert response_json(response)["data"][0]["phones"] == ["+74951112233", "+79991234567"]
 
 
+def test_card_query_uses_indexed_normalized_phone() -> None:
+    db = FakeSession()
+    get_client_card(phone="+7 (999) 123-45-67", db=db)
+    sql = str(db.statement)
+    assert "phones.normalized_phone" in sql
+    assert "LIKE" not in sql.upper()
+
+
 def test_multiple_phones_in_one_string_become_array_items() -> None:
     item = client(1, "ООО", ["+7 (495) 111-22-33; +7 (999) 123-45-67"])
     phones = response_json(get_client_card(phone="9991234567", db=FakeSession([item])))["data"][0]["phones"]
@@ -75,7 +85,7 @@ def test_all_filled_business_fields_returned_and_empty_excluded() -> None:
 
 
 def test_secret_fields_are_excluded() -> None:
-    assert compact_fields({"Наименование": "ООО", "password": "secret", "api_key": "key"}) == {"Наименование": "ООО"}
+    assert compact_fields({"Наименование": "ООО", "Комментарий": "   ", "password": "secret", "api_key": "key"}) == {"Наименование": "ООО"}
 
 
 def test_shared_phone_returns_all_clients() -> None:
@@ -87,12 +97,17 @@ def test_shared_phone_returns_all_clients() -> None:
 def test_short_phone_returns_422() -> None:
     response = get_client_card(phone="12345", db=FakeSession())
     assert response.status_code == 422
-    assert response_json(response) == {"status": "error", "message": "Номер должен содержать не менее 10 цифр"}
+    assert response_json(response) == {"status": "error", "message": "Номер телефона должен содержать не менее 10 цифр"}
+    assert "clients-total" in response.headers["server-timing"]
 
 
 def test_missing_phone_returns_found_false() -> None:
     response = get_client_card(phone="9991234567", db=FakeSession([client(1, "ООО", ["+74951112233"])]))
-    assert response_json(response) == {"status": "success", "found": False, "data": [], "reason": "Клиент с указанным номером не найден"}
+    assert response_json(response) == {
+        "status": "success", "found": False, "normalized_phone": "9991234567",
+        "data": [], "total": 0, "reason": "Клиент с указанным номером не найден",
+    }
+    assert "clients-db" in response.headers["server-timing"]
 
 
 def test_existing_list_format_remains_compatible() -> None:
@@ -118,3 +133,15 @@ def test_database_error_returns_safe_json() -> None:
     assert response_json(response) == {"status": "error", "message": "Не удалось загрузить справочник клиентов"}
     assert "password" not in response.body.decode("utf-8")
     assert "Traceback" not in response.body.decode("utf-8")
+
+
+def test_card_database_error_returns_safe_json() -> None:
+    response = get_client_card(
+        phone="9991234567",
+        db=FakeSession(error=RuntimeError("postgresql://user:password@db/private")),
+    )
+    assert response.status_code == 500
+    assert response_json(response) == {"status": "error", "message": "Не удалось загрузить карточку клиента"}
+    assert "password" not in response.body.decode("utf-8")
+    assert "Traceback" not in response.body.decode("utf-8")
+    assert "clients-total" in response.headers["server-timing"]

@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Phone, PhoneType, TradePlace
-from app.services.normalization import clean_multiline_text, clean_text, extract_emails, extract_phones, parse_date, repair_legacy_excel_text, split_values
+from app.services.normalization import clean_multiline_text, clean_text, extract_emails, extract_phones, normalize_phone, parse_date, repair_legacy_excel_text, split_values
 
 logger = logging.getLogger(__name__)
 import_logger = logging.getLogger("clients.import")
@@ -384,7 +384,8 @@ def _sync_children(client: Client, emails: list[str], sms: list[str], common: li
     existing_phones = {(phone.phone, phone.type) for phone in client.phones}
     for phone, phone_type in [(value, PhoneType.sms) for value in sms] + [(value, PhoneType.common) for value in common]:
         if (phone, phone_type) not in existing_phones:
-            client.phones.append(Phone(phone=phone, type=phone_type))
+            normalized = normalize_phone(phone)
+            client.phones.append(Phone(phone=phone, normalized_phone=normalized[-10:] if normalized else None, type=phone_type))
             existing_phones.add((phone, phone_type))
     existing_places = {place.place for place in client.trade_places}
     for place in dict.fromkeys(places):
