@@ -1,6 +1,6 @@
 from datetime import datetime, date
 from enum import StrEnum
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
 
@@ -84,6 +84,7 @@ class Import(Base):
     updated_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped_count: Mapped[int] = mapped_column(Integer, default=0)
     error_count: Mapped[int] = mapped_column(Integer, default=0)
+    log_hidden: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
 
 
 class ImportIssue(Base):
@@ -93,6 +94,30 @@ class ImportIssue(Base):
     row_number: Mapped[int | None] = mapped_column(Integer)
     level: Mapped[str] = mapped_column(String(24), index=True)
     message: Mapped[str] = mapped_column(Text)
+
+
+class FtpImportEvent(Base):
+    __tablename__ = "ftp_import_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    file_name: Mapped[str] = mapped_column(String(255), index=True)
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    added_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class ClientChange(Base):
+    """Последовательный журнал изменений для интеграционных потребителей."""
+    __tablename__ = "client_changes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_id: Mapped[int] = mapped_column(Integer, index=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    operation: Mapped[str] = mapped_column(String(16), index=True)
+    payload: Mapped[str | None] = mapped_column(Text)
 
 
 class AuditLog(Base):
