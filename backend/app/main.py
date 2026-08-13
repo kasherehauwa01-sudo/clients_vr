@@ -50,6 +50,7 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_cr
 # динамического маршрута /api/clients/{client_id} основного router.
 app.include_router(client_directory_router)
 app.include_router(router)
+app.include_router(client_directory_router)
 static_dir = Path("/app/static")
 if static_dir.exists():
     app.mount("/", SpaStaticFiles(directory=str(static_dir), html=True), name="static")
