@@ -206,3 +206,38 @@ base path: `https://kvasmix.ru/vr/clients/api/get_clients.php`.
 передаются. Поиск использует существующий индекс `ix_phones_phone`, не загружает
 полный справочник и возвращает в заголовке `Server-Timing` длительность SQL и
 полное время формирования ответа.
+
+### Инкрементальная синхронизация CallTrack
+
+Для уже актуального полного кэша CallTrack запрашивает текущую границу журнала:
+
+```text
+GET /api/clients/changes/state
+```
+
+Дальнейшие страницы запрашиваются через
+`GET /api/clients/changes?after_id=12345&limit=500`. `limit` по умолчанию равен
+500 и ограничен 2000. Ответ содержит `items`, `next_after_id` и `has_more`.
+Операция `upsert` включает полный снимок `client`, а `delete` содержит
+`client_id` и удаляет либо деактивирует запись в кэше. Cursor — монотонный
+`change_id`: следующему запросу передаётся ровно полученный `next_after_id`.
+Повторная обработка страницы безопасна, поскольку upsert и delete идемпотентны.
+Если полный refresh выполняется заново, безопасная последовательность от гонок:
+получить `last_change_id` **до** refresh, загрузить справочник, затем прочитать
+delta от сохранённого cursor до `has_more=false`.
+
+Пример страницы:
+
+```json
+{
+  "status": "success",
+  "items": [
+    {"change_id": 124, "operation": "upsert", "client_id": 10,
+     "changed_at": "2026-08-13T12:00:00", "client": {"id": 10, "name": "ООО Ромашка", "phones": ["+79991234567"]}},
+    {"change_id": 125, "operation": "delete", "client_id": 11,
+     "changed_at": "2026-08-13T12:00:01"}
+  ],
+  "next_after_id": 125,
+  "has_more": false
+}
+```

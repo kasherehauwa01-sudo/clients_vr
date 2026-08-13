@@ -3,16 +3,17 @@ import logging
 from time import monotonic
 from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import case, delete, func, or_, select, update
+from sqlalchemy import case, delete, func, insert, literal, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 import xlsxwriter
 from app.db.session import get_db
-from app.models.entities import AuditLog, Client, ClientStatus, Email, FtpImportEvent, Import, ImportIssue, Phone, TradePlace
+from app.models.entities import AuditLog, Client, ClientChange, ClientStatus, Email, FtpImportEvent, Import, ImportIssue, Phone, TradePlace
 from app.schemas.client import BulkUpdate, ClientDetail, ClientListItem, PagedClients
 from app.services.import_tasks import create_import_task, get_import_task, run_import_task
 from app.services.ftp_import import get_ftp_settings, get_ftp_status, mark_ftp_pending, run_ftp_import, save_ftp_settings, test_connection
 from app.services.ftp_scheduler import refresh_ftp_schedule
 from app.services.settings_auth import COOKIE_NAME, authenticate_settings, is_settings_authenticated, logout_settings
+from app.services.client_changes import payload_signature, record_client_change
 
 router = APIRouter(prefix="/api", tags=["clients"])
 import_logger = logging.getLogger("clients.import")
@@ -408,14 +409,21 @@ def ftp_run(background_tasks: BackgroundTasks, _: None = Depends(require_setting
 
 @router.post("/clients/bulk")
 def bulk_update(payload: BulkUpdate, db: Session = Depends(get_db)):
-    clients_to_update = db.scalars(select(Client).where(Client.id.in_(payload.ids))).all()
+    clients_to_update = db.scalars(
+        select(Client).where(Client.id.in_(payload.ids)).options(
+            selectinload(Client.phones), selectinload(Client.emails), selectinload(Client.trade_places)
+        )
+    ).all()
     for client in clients_to_update:
+        previous_signature = payload_signature(client)
         if payload.manager is not None:
             client.manager = payload.manager
         if payload.price_type is not None:
             client.price_type = payload.price_type
         if payload.status is not None:
             client.status = payload.status
+        if payload_signature(client) != previous_signature:
+            record_client_change(db, client)
         db.add(AuditLog(client_id=client.id, action="bulk_update", payload=payload.model_dump_json(exclude_none=True)))
     db.commit()
     return {"updated": len(clients_to_update)}
@@ -433,6 +441,11 @@ def bulk_delete(
             raise HTTPException(status_code=401, detail="Введите пароль для доступа к настройкам")
         # Связанные телефоны, email и места торговли удаляются на уровне БД
         # благодаря внешним ключам с ON DELETE CASCADE.
+        # Tombstone создаётся одним INSERT SELECT до удаления клиентов.
+        db.execute(insert(ClientChange).from_select(
+            [ClientChange.client_id, ClientChange.operation],
+            select(Client.id, literal("delete")),
+        ))
         deleted = db.execute(delete(Client)).rowcount or 0
         db.add(AuditLog(action="delete_all_clients", payload=f"Удалено клиентов: {deleted}"))
         db.commit()
@@ -442,6 +455,7 @@ def bulk_delete(
     id_list = [int(value) for value in ids.split(",") if value.strip()]
     clients_to_delete = db.scalars(select(Client).where(Client.id.in_(id_list))).all()
     for client in clients_to_delete:
+        record_client_change(db, client, operation="delete")
         db.delete(client)
     db.add(AuditLog(action="bulk_delete", payload=",".join(map(str, id_list))))
     db.commit()

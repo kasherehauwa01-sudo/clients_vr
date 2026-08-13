@@ -113,6 +113,16 @@ class FtpImportEvent(Base):
     error: Mapped[str | None] = mapped_column(Text)
 
 
+class ClientChange(Base):
+    """Последовательный журнал изменений для интеграционных потребителей."""
+    __tablename__ = "client_changes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_id: Mapped[int] = mapped_column(Integer, index=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    operation: Mapped[str] = mapped_column(String(16), index=True)
+    payload: Mapped[str | None] = mapped_column(Text)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

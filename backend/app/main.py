@@ -46,6 +46,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=settings.app_name, root_path=base_path, lifespan=lifespan)
 app.add_middleware(PrefixStripMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+# Специализированные /api/clients/changes должны регистрироваться раньше
+# динамического маршрута /api/clients/{client_id} основного router.
+app.include_router(client_directory_router)
 app.include_router(router)
 app.include_router(client_directory_router)
 static_dir = Path("/app/static")

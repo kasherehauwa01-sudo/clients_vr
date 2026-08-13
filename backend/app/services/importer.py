@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Phone, PhoneType, TradePlace
+from app.services.client_changes import payload_signature, record_change_if_needed
 from app.services.normalization import clean_multiline_text, clean_text, extract_emails, extract_phones, parse_date, repair_legacy_excel_text, split_values
 
 logger = logging.getLogger(__name__)
@@ -466,6 +467,7 @@ def import_files(db: Session, files: list[tuple[str, bytes]], progress: Progress
                         places = [place for place in (clean_text(value) for value in split_values(row.get("trade_places"))) if place]
                         name = _fallback_name(row, emails, sms, common)
                         client, duplicate = _find_client(db, row | {"name": name}, sms, common, emails)
+                        previous_signature = payload_signature(client) if client else None
                         data = dict(
                             name=name,
                             company=clean_text(row.get("company")),
@@ -492,6 +494,7 @@ def import_files(db: Session, files: list[tuple[str, bytes]], progress: Progress
                         _sync_children(client, emails, sms, common, places)
                         db.flush()
                         client_id = client.id
+                        record_change_if_needed(db, client, previous_signature)
                     if duplicate:
                         total.duplicates += 1
                         _log_issue(db, imp.id, "Найдено несколько совпадений клиента", row_number=row_number, level="warning")

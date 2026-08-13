@@ -4,13 +4,13 @@ from pathlib import Path
 from time import monotonic
 from collections.abc import Iterator
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.db.session import get_db
-from app.models.entities import Client, ClientStatus, Phone
+from app.models.entities import Client, ClientChange, ClientStatus, Phone
 from app.services.client_directory import build_client_record, extract_directory_phones, normalize_directory_phone
 
 
@@ -124,6 +124,47 @@ def get_clients_directory(db: Session = Depends(get_db)) -> Response:
         DIRECTORY_BATCH_SIZE, len(first_batch), memory_before,
     )
     return StreamingResponse(stream_directory(), media_type="application/json; charset=utf-8")
+
+
+@router.get("/clients/changes/state")
+def client_changes_state(db: Session = Depends(get_db)) -> dict:
+    """Возвращает cursor, с которого можно начать delta после полного refresh."""
+    last_change_id = db.scalar(select(ClientChange.id).order_by(ClientChange.id.desc()).limit(1)) or 0
+    return {"status": "success", "last_change_id": last_change_id}
+
+
+@router.get("/clients/changes")
+def client_changes(
+    after_id: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=2000),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Выдаёт строго упорядоченную страницу идемпотентных изменений."""
+    changes = db.scalars(
+        select(ClientChange)
+        .where(ClientChange.id > after_id)
+        .order_by(ClientChange.id)
+        .limit(limit + 1)
+    ).all()
+    has_more = len(changes) > limit
+    page = changes[:limit]
+    items = []
+    for change in page:
+        item = {
+            "change_id": change.id,
+            "changed_at": change.changed_at,
+            "operation": change.operation,
+            "client_id": change.client_id,
+        }
+        if change.operation == "upsert" and change.payload:
+            item["client"] = json.loads(change.payload)
+        items.append(item)
+    return {
+        "status": "success",
+        "items": items,
+        "next_after_id": page[-1].id if page else after_id,
+        "has_more": has_more,
+    }
 
 
 @router.get("/client_card.php")
