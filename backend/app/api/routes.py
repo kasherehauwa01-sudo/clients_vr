@@ -345,12 +345,16 @@ def logs(source: str | None = None, db: Session = Depends(get_db), _: None = Dep
     ftp_events = db.scalars(select(FtpImportEvent).order_by(FtpImportEvent.id.desc()).limit(100)).all()
     items.extend({
         "id": f"ftp-{item.id}", "created_at": item.created_at, "source": "FTP",
-        "level": "error" if item.status == "Ошибка" else "info", "process": item.file_name,
+        "level": "error" if item.status == "Ошибка" else "warning" if item.status == "С предупреждениями" else "info",
+        "process": item.file_name,
         "row_number": None,
         "message": (
             f"Размер: {item.file_size} байт. Загружено: {item.added_count}. Обновлено: {item.updated_count}. "
             f"Пропущено: {item.skipped_count}. Длительность: {item.duration_seconds} сек. Статус: {item.status}."
-            + (f" Ошибка: {item.error}" if item.error else "")
+            + (
+                f" {'Предупреждение' if item.status == 'С предупреждениями' else 'Ошибка'}: {item.error}"
+                if item.error else ""
+            )
         ),
     } for item in ftp_events)
     if source:

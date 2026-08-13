@@ -194,6 +194,15 @@ def _record_event(filename: str, size: int, status: str, started: float, result=
         db.commit()
 
 
+def _import_error_details(result) -> str:
+    """Возвращает причины ошибок строк вместо малоинформативного счётчика."""
+    errors = [message for message in result.logs if "Причина:" in message or "Ошибка" in message]
+    details = errors[:10]
+    if len(errors) > len(details):
+        details.append(f"Ещё ошибок: {len(errors) - len(details)}")
+    return "\n".join(details) or f"Импорт завершён с ошибками: {result.errors}"
+
+
 def _process_file(settings: FtpSettings, filename: str) -> bool:
     started = monotonic()
     size = 0
@@ -222,8 +231,11 @@ def _process_file(settings: FtpSettings, filename: str) -> bool:
             logger.info("FTP: запуск импорта %s", filename)
             with SessionLocal() as db:
                 result = import_files(db, [(Path(filename).name, path.read_bytes())])
-            if result.errors:
-                raise RuntimeError(f"Импорт завершён с ошибками: {result.errors}")
+            # Ошибка одной строки не откатывает успешно записанные строки. Не
+            # оставляем такой файл для повторного импорта всех 15 тысяч записей.
+            partial_error = _import_error_details(result) if result.errors else None
+            if result.errors and not (result.added or result.updated):
+                raise RuntimeError(partial_error)
 
         def delete_imported(ftp: FTP) -> None:
             names = ftp.nlst()
@@ -234,7 +246,8 @@ def _process_file(settings: FtpSettings, filename: str) -> bool:
 
         _ftp_operation(settings, f"удаление {filename}", delete_imported)
         logger.info("FTP: файл удалён после успешного импорта: %s", filename)
-        _record_event(filename, size, "Успешно", started, result=result)
+        status = "С предупреждениями" if result and result.errors else "Успешно"
+        _record_event(filename, size, status, started, result=result, error=partial_error)
         return True
     except Exception:
         full_error = traceback.format_exc()
