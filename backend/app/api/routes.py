@@ -284,6 +284,7 @@ def client_detail(client_id: int, db: Session = Depends(get_db)):
         raw_common_phones=client.raw_common_phones,
         raw_sms_phones=client.raw_sms_phones,
         raw_email=client.raw_email,
+        raw_email_source_known=client.raw_email_source_known,
         client_source=client.client_source,
         last_purchase_date=client.last_purchase_date,
         buyer_type=client.buyer_type,
@@ -559,7 +560,11 @@ def _email_report_xlsx(db: Session, report: dict) -> bytes:
     ).distinct().subquery()
     clients = db.scalars(
         select(Client).join(filtered_ids, filtered_ids.c.id == Client.id)
-        .where(Client.raw_email.is_not(None), Client.raw_email != "")
+        .where(or_(
+            Client.raw_email != "",
+            (Client.raw_email_source_known.is_(False) & Client.emails.any(Email.email != "")),
+        ))
+        .options(selectinload(Client.emails))
         .order_by(Client.name, Client.id)
     ).all()
     output = BytesIO()
@@ -574,7 +579,15 @@ def _email_report_xlsx(db: Session, report: dict) -> bytes:
             continue
         if name_key not in grouped:
             grouped[name_key] = (display_name, set())
-        grouped[name_key][1].update(extract_emails(client.raw_email))
+        # До первого повторного импорта источник старых email определить нельзя.
+        # Для таких legacy-записей используем прежний список, чтобы отчёт не был
+        # пустым; после импорта берём строго исходное поле карточки.
+        emails = (
+            extract_emails(client.raw_email)
+            if client.raw_email_source_known
+            else [item.email.strip() for item in client.emails if item.email.strip()]
+        )
+        grouped[name_key][1].update(emails)
     row = 1
     for display_name, emails in grouped.values():
         for email in sorted(emails):

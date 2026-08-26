@@ -29,6 +29,7 @@ class ClientDetail(ClientListItem):
     raw_common_phones: str | None = None
     raw_sms_phones: str | None = None
     raw_email: str | None = None
+    raw_email_source_known: bool = False
     client_source: str | None = None
     last_purchase_date: date | None = None
     buyer_type: str | None = None

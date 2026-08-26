@@ -10,7 +10,7 @@ def make_client(client_id=1, name="ООО", phones=("+79991234567",), status="ac
         id=client_id, name=name, status=status, company=None, manager=None,
         price_type=None, birth_date=None, director=None, contact_person=None,
         raw_common_phones=None, raw_sms_phones=None,
-        raw_email=None,
+        raw_email=None, raw_email_source_known=False,
         client_source=None, last_purchase_date=None, buyer_type=None,
         counterparty_type=None, updated_at=None,
         phones=[SimpleNamespace(phone=value) for value in phones],

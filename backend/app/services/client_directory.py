@@ -89,13 +89,18 @@ def build_client_record(client, *, normalized_phones: bool) -> dict | None:
         return None
     common_phones = [phone.phone for phone in client.phones if getattr(phone.type, "value", phone.type) == "common"]
     sms_phones = [phone.phone for phone in client.phones if getattr(phone.type, "value", phone.type) == "sms"]
+    card_emails = (
+        extract_emails(client.raw_email)
+        if client.raw_email_source_known
+        else list(dict.fromkeys(email.email for email in client.emails if email.email))
+    )
     fields = compact_fields({
         "Наименование": name,
         "Телефоны": phones,
         "Тип цены": client.price_type,
         "Менеджер": client.manager,
         "Дата рождения": client.birth_date,
-        "Email": extract_emails(client.raw_email),
+        "Email": card_emails,
         "Телефоны прочие": client.raw_common_phones or common_phones,
         "Места торговли": list(dict.fromkeys(place.place for place in client.trade_places if place.place)),
         "Телефоны для СМС и рассылки": client.raw_sms_phones or sms_phones,

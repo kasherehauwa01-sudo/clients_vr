@@ -28,7 +28,7 @@ def client(client_id, name, phones, **values):
     defaults = dict(
         id=client_id, name=name, price_type=None, manager=None, birth_date=None,
         raw_common_phones=None, raw_sms_phones=None, director=None, company=None,
-        raw_email=None,
+        raw_email=None, raw_email_source_known=False,
         contact_person=None, client_source=None, last_purchase_date=None,
         buyer_type=None, counterparty_type=None, status="active", created_at=None, updated_at=None, emails=[], trade_places=[],
     )
@@ -90,12 +90,18 @@ def test_multiple_phones_in_one_string_become_array_items() -> None:
 
 
 def test_all_filled_business_fields_returned_and_empty_excluded() -> None:
-    item = client(1, "ООО", ["+79991234567"], company="Фирма", manager="Иван", director="", raw_email="mail@example.ru", emails=[SimpleNamespace(email="from-other-field@example.ru")])
+    item = client(1, "ООО", ["+79991234567"], company="Фирма", manager="Иван", director="", raw_email="mail@example.ru", raw_email_source_known=True, emails=[SimpleNamespace(email="from-other-field@example.ru")])
     fields = response_json(get_client_card(phone="9991234567", db=FakeSession([item])))["data"][0]["fields"]
     assert fields["Фирма"] == "Фирма"
     assert fields["Менеджер"] == "Иван"
     assert fields["Email"] == ["mail@example.ru"]
     assert "Руководитель" not in fields
+
+
+def test_legacy_card_email_is_not_empty_before_reimport() -> None:
+    item = client(1, "ООО", ["+79991234567"], emails=[SimpleNamespace(email="legacy@example.ru")])
+    fields = response_json(get_client_card(phone="9991234567", db=FakeSession([item])))["data"][0]["fields"]
+    assert fields["Email"] == ["legacy@example.ru"]
 
 
 def test_secret_fields_are_excluded() -> None:

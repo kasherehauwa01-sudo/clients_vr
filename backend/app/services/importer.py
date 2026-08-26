@@ -372,7 +372,9 @@ def _find_client(db: Session, row: dict, sms: list[str], phones: list[str], emai
 def _apply_client_data(client: Client, data: dict[str, object]) -> None:
     for key, value in data.items():
         # Пустые значения из очередной строки XLS не должны затирать уже загруженные данные.
-        if key == "last_import_id" or value not in (None, ""):
+        # Для исходного Email пустота значима: она означает, что поле карточки
+        # проверено и действительно не содержит адреса.
+        if key in {"last_import_id", "raw_email", "raw_email_source_known"} or value not in (None, ""):
             setattr(client, key, value)
 
 
@@ -480,6 +482,7 @@ def import_files(db: Session, files: list[tuple[str, bytes]], progress: Progress
                             raw_common_phones=clean_multiline_text(row.get("common_phones")),
                             raw_sms_phones=clean_multiline_text(row.get("sms_phones")),
                             raw_email="\n".join(direct_emails) or None,
+                            raw_email_source_known=True,
                             client_source=clean_text(row.get("client_source")),
                             last_purchase_date=parse_date(row.get("last_purchase_date")),
                             buyer_type=clean_text(row.get("buyer_type")),

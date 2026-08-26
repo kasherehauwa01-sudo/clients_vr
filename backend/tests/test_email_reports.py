@@ -24,3 +24,4 @@ def test_email_update_contains_all_default_files_and_filters() -> None:
 
 def test_email_report_uses_original_card_email_field() -> None:
     assert Client.__table__.c.raw_email.type.python_type is str
+    assert Client.__table__.c.raw_email_source_known.type.python_type is bool
