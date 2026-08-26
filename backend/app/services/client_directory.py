@@ -1,6 +1,8 @@
 import re
 from datetime import date, datetime
 
+from app.services.normalization import extract_emails
+
 
 PHONE_GROUP_SEPARATOR_RE = re.compile(r"[;,|\r\n]+")
 SECRET_FIELD_DENYLIST = {
@@ -93,7 +95,7 @@ def build_client_record(client, *, normalized_phones: bool) -> dict | None:
         "Тип цены": client.price_type,
         "Менеджер": client.manager,
         "Дата рождения": client.birth_date,
-        "Email": list(dict.fromkeys(email.email for email in client.emails if email.email)),
+        "Email": extract_emails(client.raw_email),
         "Телефоны прочие": client.raw_common_phones or common_phones,
         "Места торговли": list(dict.fromkeys(place.place for place in client.trade_places if place.place)),
         "Телефоны для СМС и рассылки": client.raw_sms_phones or sms_phones,

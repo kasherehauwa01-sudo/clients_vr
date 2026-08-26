@@ -1,4 +1,5 @@
 from app.api.routes import DEFAULT_EMAIL_REPORTS, EXPORT_COLUMNS
+from app.models.entities import Client
 
 
 def test_registry_export_exposes_requested_columns() -> None:
@@ -19,3 +20,7 @@ def test_email_update_contains_all_default_files_and_filters() -> None:
     assert reports["Розничные клиенты"]["counterparty_types"] == ["Частное лицо"]
     assert reports["Пашута ОПТ"]["managers"] == ["Пашута М.С.", "Пашута М.С. (Ростов)"]
     assert reports["Родина, Самойлова"]["managers"] == ["Родина", "Самойлова", "Родина Е.В. (Ростов)"]
+
+
+def test_email_report_uses_original_card_email_field() -> None:
+    assert Client.__table__.c.raw_email.type.python_type is str

@@ -33,6 +33,9 @@ class Client(Base):
     contact_person: Mapped[str | None] = mapped_column(String(255))
     raw_common_phones: Mapped[str | None] = mapped_column(Text)
     raw_sms_phones: Mapped[str | None] = mapped_column(Text)
+    # Исходное поле «Email» из XLS хранится отдельно от агрегированного
+    # справочника emails, куда также попадают адреса из других полей карточки.
+    raw_email: Mapped[str | None] = mapped_column(Text)
     client_source: Mapped[str | None] = mapped_column(String(255), index=True)
     last_purchase_date: Mapped[date | None] = mapped_column(Date, index=True)
     buyer_type: Mapped[str | None] = mapped_column(String(120), index=True)

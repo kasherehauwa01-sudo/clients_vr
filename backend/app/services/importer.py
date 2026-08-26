@@ -447,9 +447,10 @@ def import_files(db: Session, files: list[tuple[str, bytes]], progress: Progress
                     client_id: int | None = None
                     action = "client_updated"
                     with db.begin_nested():
+                        direct_emails = extract_emails(row.get("emails"))
                         emails = list(
                             dict.fromkeys(
-                                extract_emails(row.get("emails"))
+                                direct_emails
                                 + extract_emails(row.get("trade_places"))
                                 + extract_emails(row.get("director"))
                                 + extract_emails(row.get("contact_person"))
@@ -478,6 +479,7 @@ def import_files(db: Session, files: list[tuple[str, bytes]], progress: Progress
                             contact_person=clean_text(row.get("contact_person")),
                             raw_common_phones=clean_multiline_text(row.get("common_phones")),
                             raw_sms_phones=clean_multiline_text(row.get("sms_phones")),
+                            raw_email="\n".join(direct_emails) or None,
                             client_source=clean_text(row.get("client_source")),
                             last_purchase_date=parse_date(row.get("last_purchase_date")),
                             buyer_type=clean_text(row.get("buyer_type")),

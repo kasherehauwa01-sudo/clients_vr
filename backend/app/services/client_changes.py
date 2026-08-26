@@ -26,6 +26,7 @@ def client_sync_payload(client: Client) -> dict:
         "contact_person": client.contact_person,
         "raw_common_phones": client.raw_common_phones,
         "raw_sms_phones": client.raw_sms_phones,
+        "raw_email": client.raw_email,
         "client_source": client.client_source,
         "last_purchase_date": value(client.last_purchase_date),
         "buyer_type": client.buyer_type,

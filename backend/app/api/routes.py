@@ -16,6 +16,7 @@ from app.services.ftp_import import get_ftp_settings, get_ftp_status, mark_ftp_p
 from app.services.ftp_scheduler import refresh_ftp_schedule
 from app.services.settings_auth import COOKIE_NAME, authenticate_settings, is_settings_authenticated, logout_settings
 from app.services.client_changes import payload_signature, record_client_change
+from app.services.normalization import extract_emails
 
 router = APIRouter(prefix="/api", tags=["clients"])
 import_logger = logging.getLogger("clients.import")
@@ -282,6 +283,7 @@ def client_detail(client_id: int, db: Session = Depends(get_db)):
         contact_person=client.contact_person,
         raw_common_phones=client.raw_common_phones,
         raw_sms_phones=client.raw_sms_phones,
+        raw_email=client.raw_email,
         client_source=client.client_source,
         last_purchase_date=client.last_purchase_date,
         buyer_type=client.buyer_type,
@@ -554,11 +556,11 @@ def _email_report_xlsx(db: Session, report: dict) -> bytes:
         price_type=report.get("price_types") or None,
         buyer_type=report.get("buyer_types") or None,
         counterparty_type=report.get("counterparty_types") or None,
-        has_email=True,
     ).distinct().subquery()
     clients = db.scalars(
         select(Client).join(filtered_ids, filtered_ids.c.id == Client.id)
-        .options(selectinload(Client.emails)).order_by(Client.name, Client.id)
+        .where(Client.raw_email.is_not(None), Client.raw_email != "")
+        .order_by(Client.name, Client.id)
     ).all()
     output = BytesIO()
     workbook = xlsxwriter.Workbook(output, {"in_memory": True})
@@ -572,7 +574,7 @@ def _email_report_xlsx(db: Session, report: dict) -> bytes:
             continue
         if name_key not in grouped:
             grouped[name_key] = (display_name, set())
-        grouped[name_key][1].update(item.email.strip() for item in client.emails if item.email.strip())
+        grouped[name_key][1].update(extract_emails(client.raw_email))
     row = 1
     for display_name, emails in grouped.values():
         for email in sorted(emails):
