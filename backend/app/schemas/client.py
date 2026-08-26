@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 
 class PhoneOut(BaseModel):
@@ -13,7 +13,9 @@ class ClientListItem(BaseModel):
     company: str | None = None
     manager: str | None = None
     phone: str | None = None
-    email: EmailStr | None = None
+    # В реестре поле содержит все адреса клиента, разделённые переводами строк.
+    # Это отображаемая строка, а не одиночный адрес EmailStr.
+    email: str | None = None
     trade_place: str | None = None
     birth_date: date | None = None
     last_import_at: datetime | None = None
@@ -26,6 +28,7 @@ class ClientDetail(ClientListItem):
     contact_person: str | None = None
     raw_common_phones: str | None = None
     raw_sms_phones: str | None = None
+    raw_email: str | None = None
     client_source: str | None = None
     last_purchase_date: date | None = None
     buyer_type: str | None = None
