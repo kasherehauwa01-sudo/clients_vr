@@ -9,6 +9,8 @@ type HelpTab = 'features' | 'manual' | 'autoload' | 'journal';
 type PresenceFilter = '' | 'true' | 'false';
 type FilterOptions = { managers: string[]; price_types: string[]; buyer_types: string[]; counterparty_types: string[] };
 type LogEntry = { id: string; created_at?: string; source: string; level: string; process: string; row_number?: number; message: string };
+type ExportColumn = 'name' | 'company' | 'manager' | 'phones' | 'emails';
+type EmailReport = { name: string; price_types: string[]; buyer_types: string[]; counterparty_types: string[]; managers: string[] };
 
 const formatMoscowTime = (value?: string) => {
   if (!value) return '—';
@@ -48,6 +50,14 @@ async function api(path: string, init?: RequestInit) {
   return response.json();
 }
 
+async function downloadResponse(path: string, filename: string, init?: RequestInit) {
+  const response = await fetch(`${API_BASE_URL}${path}`, { credentials: 'include', ...init });
+  if (!response.ok) throw new Error(`Ошибка HTTP ${response.status}`);
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a'); link.href = url; link.download = filename; link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<MainTab>('registry');
   const [settingsAuthOpen, setSettingsAuthOpen] = useState(false);
@@ -65,6 +75,9 @@ function App() {
   const [buyerType, setBuyerType] = useState<string[]>([]);
   const [counterpartyType, setCounterpartyType] = useState<string[]>([]);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [reportsOpen, setReportsOpen] = useState(false);
+  const [emailReportOpen, setEmailReportOpen] = useState(false);
   const [filterOptions, setFilterOptions] = useState<FilterOptions>({ managers: [], price_types: [], buyer_types: [], counterparty_types: [] });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState('100');
@@ -141,7 +154,11 @@ function App() {
     params.set('page_size', pageSize);
     return params.toString();
   }, [filterQuery, page, pageSize]);
-  const exportUrl = `${API_BASE_URL}/clients-export.xlsx${filterQuery ? `?${filterQuery}` : ''}`;
+  const exportClients = async (columns: ExportColumn[]) => {
+    const params = new URLSearchParams(filterQuery);
+    columns.forEach(column => params.append('columns', column));
+    await downloadResponse(`/clients-export.xlsx?${params}`, 'clients.xlsx');
+  };
   const load = (signal?: AbortSignal) => api(`/clients?${query}`, { signal }).then(d => { setClients(d.items); setTotal(d.total); });
   const visibleIds = useMemo(() => clients.map(client => client.id), [clients]);
   const allVisibleChecked = visibleIds.length > 0 && visibleIds.every(id => checkedIds.has(id));
@@ -244,10 +261,52 @@ function App() {
     {settingsAuthOpen && <div className="auth-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSettingsAuthOpen(false); }}><form className="auth-dialog" role="dialog" aria-modal="true" aria-labelledby="auth-title" onSubmit={unlockSettings}><h2 id="auth-title">Доступ к настройкам</h2><p>Введите пароль, чтобы открыть защищённый раздел.</p><label>Пароль<input autoFocus type="password" value={settingsPassword} onChange={event => setSettingsPassword(event.target.value)} autoComplete="current-password" /></label>{settingsAuthError && <p className="auth-error" role="alert">{settingsAuthError}</p>}<div className="auth-actions"><button type="button" className="tonal" onClick={() => setSettingsAuthOpen(false)}>Отмена</button><button type="submit" className="primary-action">Войти</button></div></form></div>}
     {activeTab === 'settings' ? <Settings active={helpTab} onChange={setHelpTab} onLock={lockSettings} onUpload={() => fileInputRef.current?.click()} onDeleteAllClients={deleteAllClients} notice={notice} uploading={uploading} logs={logs} logsLoading={logsLoading} logSource={logSource} onRefreshLogs={() => loadLogs()} onShowAllLogs={showAllLogs} onOpenFtpLogs={openFtpLogs} onDeleteLogs={deleteLogs} /> : <>
       {notice && <div className="notice">{notice}</div>}
-      <div className="workspace"><section className="content-area"><div className="registry-summary"><span>В реестре: <b>{total}</b> строк</span><div className="summary-actions">{checkedIds.size > 0 && <button className="danger-action" type="button" onClick={deleteCheckedClients}>Удалить выбранные ({checkedIds.size})</button>}<a className="button tonal" href={exportUrl}>Скачать</a></div></div><section className="table"><table><thead><tr><th className="check-cell"><input type="checkbox" aria-label="Выбрать все строки на странице" checked={allVisibleChecked} onChange={toggleVisibleCheck} /></th><th>Наименование</th><th>Фирма</th><th>Менеджер</th><th>Телефоны</th><th>Email</th></tr></thead><tbody>{clients.map(c => <tr key={c.id} className={[c.status === 'out_of_stock' ? 'muted-row' : '', selectedClientId === c.id ? 'selected-row' : '', checkedIds.has(c.id) ? 'checked-row' : ''].filter(Boolean).join(' ')} aria-selected={selectedClientId === c.id} onClick={() => { setSelectedClientId(c.id); api(`/clients/${c.id}`).then(setDetail); }}><td className="check-cell"><input type="checkbox" aria-label={`Выбрать ${c.name}`} checked={checkedIds.has(c.id)} onClick={event => event.stopPropagation()} onChange={() => toggleClientCheck(c.id)} /></td><td><b>{c.name}</b></td><td>{c.company}</td><td>{c.manager}</td><td>{c.phone}</td><td>{c.email}</td></tr>)}</tbody></table><footer><button disabled={page === 1} onClick={() => setPage(page - 1)}>Назад</button><span>{page} / {totalPages} · {total} записей</span><label className="page-size">Строк на странице<select value={pageSize} onChange={e => { setPageSize(e.target.value); setPage(1); }}><option value="100">100</option><option value="200">200</option><option value="300">300</option><option value="400">400</option><option value="500">500</option><option value="all">Все</option></select></label><button disabled={pageSize === 'all' || page * pageSizeNumber >= total} onClick={() => setPage(page + 1)}>Вперед</button></footer></section></section></div>      {filtersOpen && <FilterDialog q={q} phoneQuery={phoneQuery} hasPhone={hasPhone} hasEmail={hasEmail} manager={manager} priceType={priceType} buyerType={buyerType} counterpartyType={counterpartyType} options={filterOptions} onQ={setQ} onPhoneQuery={setPhoneQuery} onHasPhone={setHasPhone} onHasEmail={setHasEmail} onManager={setManager} onPriceType={setPriceType} onBuyerType={setBuyerType} onCounterpartyType={setCounterpartyType} onReset={resetFilters} onClose={() => { setFiltersOpen(false); setPage(1); }} />}
+      <div className="workspace"><section className="content-area"><div className="registry-summary"><span>В реестре: <b>{total}</b> строк</span><div className="summary-actions">{checkedIds.size > 0 && <button className="danger-action" type="button" onClick={deleteCheckedClients}>Удалить выбранные ({checkedIds.size})</button>}<button className="tonal" onClick={() => setExportOpen(true)}>Скачать</button><button className="tonal" onClick={() => setReportsOpen(true)}>Отчеты</button></div></div><section className="table"><table><thead><tr><th className="check-cell"><input type="checkbox" aria-label="Выбрать все строки на странице" checked={allVisibleChecked} onChange={toggleVisibleCheck} /></th><th>Наименование</th><th>Фирма</th><th>Менеджер</th><th>Телефоны</th><th>Email</th></tr></thead><tbody>{clients.map(c => <tr key={c.id} className={[c.status === 'out_of_stock' ? 'muted-row' : '', selectedClientId === c.id ? 'selected-row' : '', checkedIds.has(c.id) ? 'checked-row' : ''].filter(Boolean).join(' ')} aria-selected={selectedClientId === c.id} onClick={() => { setSelectedClientId(c.id); api(`/clients/${c.id}`).then(setDetail); }}><td className="check-cell"><input type="checkbox" aria-label={`Выбрать ${c.name}`} checked={checkedIds.has(c.id)} onClick={event => event.stopPropagation()} onChange={() => toggleClientCheck(c.id)} /></td><td><b>{c.name}</b></td><td>{c.company}</td><td>{c.manager}</td><td>{c.phone}</td><td>{c.email}</td></tr>)}</tbody></table><footer><button disabled={page === 1} onClick={() => setPage(page - 1)}>Назад</button><span>{page} / {totalPages} · {total} записей</span><label className="page-size">Строк на странице<select value={pageSize} onChange={e => { setPageSize(e.target.value); setPage(1); }}><option value="100">100</option><option value="200">200</option><option value="300">300</option><option value="400">400</option><option value="500">500</option><option value="all">Все</option></select></label><button disabled={pageSize === 'all' || page * pageSizeNumber >= total} onClick={() => setPage(page + 1)}>Вперед</button></footer></section></section></div>      {filtersOpen && <FilterDialog q={q} phoneQuery={phoneQuery} hasPhone={hasPhone} hasEmail={hasEmail} manager={manager} priceType={priceType} buyerType={buyerType} counterpartyType={counterpartyType} options={filterOptions} onQ={setQ} onPhoneQuery={setPhoneQuery} onHasPhone={setHasPhone} onHasEmail={setHasEmail} onManager={setManager} onPriceType={setPriceType} onBuyerType={setBuyerType} onCounterpartyType={setCounterpartyType} onReset={resetFilters} onClose={() => { setFiltersOpen(false); setPage(1); }} />}
+      {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} onExport={exportClients} />}
+      {reportsOpen && <SimpleDialog title="Отчеты" onClose={() => setReportsOpen(false)}><button className="report-choice" onClick={() => { setReportsOpen(false); setEmailReportOpen(true); }}>Обновление email</button></SimpleDialog>}
+      {emailReportOpen && <EmailReportDialog managers={filterOptions.managers} onClose={() => setEmailReportOpen(false)} />}
       {detail && <div className="drawer-backdrop" onClick={() => setDetail(null)}><aside className="drawer" onClick={event => event.stopPropagation()}><button className="drawer-close" type="button" onClick={() => setDetail(null)}>×</button><ClientCard c={detail} /></aside></div>}
     </>}
   </main>;
+}
+
+function SimpleDialog({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return <div className="filter-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="filter-dialog report-dialog" role="dialog" aria-modal="true"><header><h2>{title}</h2><button className="dialog-close" onClick={onClose}>×</button></header>{children}</section></div>;
+}
+
+function ExportDialog({ onClose, onExport }: { onClose: () => void; onExport: (columns: ExportColumn[]) => Promise<void> }) {
+  const labels: [ExportColumn, string][] = [['name', 'Наименование'], ['company', 'Фирма'], ['manager', 'Менеджер'], ['phones', 'Телефоны'], ['emails', 'Email']];
+  const [selected, setSelected] = useState<ExportColumn[]>(labels.map(item => item[0]));
+  const [busy, setBusy] = useState(false);
+  const toggle = (column: ExportColumn) => setSelected(values => values.includes(column) ? values.filter(value => value !== column) : [...values, column]);
+  return <SimpleDialog title="Скачать реестр" onClose={onClose}><p>Выберите колонки итоговой таблицы.</p><div className="column-choices">{labels.map(([value, label]) => <label key={value}><input type="checkbox" checked={selected.includes(value)} onChange={() => toggle(value)} />{label}</label>)}</div><div className="filter-actions"><button className="tonal" onClick={onClose}>Отмена</button><button className="primary-action" disabled={!selected.length || busy} onClick={async () => { setBusy(true); try { await onExport(selected); onClose(); } finally { setBusy(false); } }}>{busy ? 'Формирование…' : 'Скачать'}</button></div></SimpleDialog>;
+}
+
+const listValue = (values: string[]) => values.join(', ');
+const parseList = (value: string) => value.split(',').map(item => item.trim()).filter(Boolean);
+
+function EmailReportDialog({ managers, onClose }: { managers: string[]; onClose: () => void }) {
+  const [reports, setReports] = useState<EmailReport[]>([]);
+  const [availableManagers, setAvailableManagers] = useState(managers);
+  const [busy, setBusy] = useState(true);
+  const [message, setMessage] = useState('Проверка условий…');
+  useEffect(() => {
+    api('/reports/email-update/config').then(data => {
+      const saved = localStorage.getItem('clients-email-reports');
+      try { setReports(saved ? JSON.parse(saved) : data.reports); }
+      catch { localStorage.removeItem('clients-email-reports'); setReports(data.reports); }
+      setAvailableManagers(data.managers);
+      setMessage('Проверьте будущие файлы и применяемые фильтры.');
+    }).catch(error => setMessage(String(error))).finally(() => setBusy(false));
+  }, []);
+  const save = (next: EmailReport[]) => { setReports(next); localStorage.setItem('clients-email-reports', JSON.stringify(next)); };
+  const update = (index: number, key: keyof EmailReport, value: string | string[]) => save(reports.map((report, reportIndex) => reportIndex === index ? { ...report, [key]: value } : report));
+  const selectedManagers = new Set(reports.flatMap(report => report.managers));
+  const unselectedManagers = availableManagers.filter(manager => !selectedManagers.has(manager));
+  const renderReport = (report: EmailReport, index: number) => <article className="report-file" key={`${report.name}-${index}`}><div className="report-file-heading"><input aria-label="Название файла" value={report.name} onChange={event => update(index, 'name', event.target.value)} /><button className="danger-action" onClick={() => save(reports.filter((_, reportIndex) => reportIndex !== index))}>Удалить</button></div><div className="report-filter-grid"><label>Тип цены<input value={listValue(report.price_types)} onChange={event => update(index, 'price_types', parseList(event.target.value))} /></label><label>Вид покупателя<input value={listValue(report.buyer_types)} onChange={event => update(index, 'buyer_types', parseList(event.target.value))} /></label><label>Вид контрагента<input value={listValue(report.counterparty_types)} onChange={event => update(index, 'counterparty_types', parseList(event.target.value))} /></label><label>Менеджер<input value={listValue(report.managers)} onChange={event => update(index, 'managers', parseList(event.target.value))} placeholder="Без фильтра" /></label></div><p>Дедупликация по Наименованию · только клиенты с Email · отдельная строка для каждого Email.</p></article>;
+  const fixed = reports.slice(0, 2);
+  const wholesale = reports.slice(2);
+  return <SimpleDialog title="Отчет «Обновление email»" onClose={onClose}><p className="report-message">{message}</p>{!busy && <div className="report-builder"><section><h3>Корпоративные и розничные клиенты</h3>{fixed.map(report => renderReport(report, reports.indexOf(report)))}</section><section><div className="report-section-heading"><h3>Оптовые клиенты</h3><button className="tonal" onClick={() => save([...reports, { name: 'Новый файл', price_types: ['Оптовые'], buyer_types: ['Оптовик'], counterparty_types: ['Организация'], managers: [] }])}>Добавить файл</button></div>{wholesale.map(report => renderReport(report, reports.indexOf(report)))}<aside className="unselected-managers"><b>Не распределены по файлам:</b><p>{unselectedManagers.join(', ') || 'Все менеджеры распределены'}</p></aside></section></div>}<div className="filter-actions"><button className="tonal" onClick={onClose}>Отмена</button><button className="primary-action" disabled={busy || !reports.length} onClick={async () => { setBusy(true); setMessage('Формирование ZIP-архива…'); try { await downloadResponse('/reports/email-update.zip', 'Обновление email.zip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reports }) }); setMessage('Архив сформирован.'); } catch (error) { setMessage(String(error)); } finally { setBusy(false); } }}>Сформировать</button></div></SimpleDialog>;
 }
 
 function ClientsHeader({ activeTab, onTabChange, query, onOpenFilters }: ClientsHeaderProps) {

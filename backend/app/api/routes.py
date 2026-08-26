@@ -1,6 +1,8 @@
 from io import BytesIO
+import json
 import logging
 from time import monotonic
+from zipfile import ZIP_DEFLATED, ZipFile
 from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import case, delete, func, insert, literal, or_, select, update
@@ -17,6 +19,25 @@ from app.services.client_changes import payload_signature, record_client_change
 
 router = APIRouter(prefix="/api", tags=["clients"])
 import_logger = logging.getLogger("clients.import")
+
+EXPORT_COLUMNS = {
+    "name": ("Наименование", lambda client: client.name),
+    "company": ("Фирма", lambda client: client.company or ""),
+    "manager": ("Менеджер", lambda client: client.manager or ""),
+    "phones": ("Телефоны", lambda client: "\n".join(sorted({item.phone for item in client.phones}))),
+    "emails": ("Email", lambda client: "\n".join(sorted({item.email.strip() for item in client.emails if item.email.strip()}))),
+}
+
+DEFAULT_EMAIL_REPORTS = [
+    {"name": "Корпоративные клиенты", "price_types": ["Корпоративные"], "buyer_types": ["Корпоративный"], "counterparty_types": ["Организация"], "managers": []},
+    {"name": "Розничные клиенты", "price_types": ["Розничные"], "buyer_types": ["Розница"], "counterparty_types": ["Частное лицо"], "managers": []},
+    {"name": "Пашута ОПТ", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Пашута М.С.", "Пашута М.С. (Ростов)"]},
+    {"name": "Родина, Самойлова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Родина", "Самойлова", "Родина Е.В. (Ростов)"]},
+    {"name": "Трошина, Гончарова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Трошина Лариса"]},
+    {"name": "Шакулова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Шакулова Екатерина"]},
+    {"name": "Суркова, Ромащенко, Бабушкина, Новожилова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Суркова Н.", "Ромащенко Екатерина", "Бабушкина Виктория", "Новожилова М."]},
+    {"name": "Селянкина, Королева", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Селянкина Татьяна", "Королева Светлана"]},
+]
 
 
 def require_settings_auth(clients_settings_session: str | None = Cookie(None)) -> None:
@@ -482,15 +503,15 @@ def export_clients(
     status: str | None = None,
     birth_day: int | None = None,
     birth_month: int | None = None,
+    columns: list[str] | None = Query(None),
 ):
     output = BytesIO()
     workbook = xlsxwriter.Workbook(output)
     worksheet = workbook.add_worksheet("clients")
-    headers = [
-        "Наименование", "Фирма", "Менеджер", "Телефон", "Email", "Место торговли",
-        "Дата рождения", "Источник клиента", "Дата последней покупки", "Вид покупателя",
-        "Вид контрагента", "Статус",
-    ]
+    selected_columns = [value for value in (columns or list(EXPORT_COLUMNS)) if value in EXPORT_COLUMNS]
+    if not selected_columns:
+        selected_columns = ["name"]
+    headers = [EXPORT_COLUMNS[value][0] for value in selected_columns]
     for column, header in enumerate(headers):
         worksheet.write(0, column, header)
     filtered_ids = apply_client_filters(
@@ -516,28 +537,79 @@ def export_clients(
         .order_by(case((Client.status == ClientStatus.out_of_stock, 1), else_=0), Client.name, Client.id)
     )
     for row_number, client in enumerate(db.scalars(stmt), start=1):
-        worksheet.write_row(
-            row_number,
-            0,
-            [
-                client.name,
-                client.company or "",
-                client.manager or "",
-                "\n".join(sorted({phone.phone for phone in client.phones})),
-                "\n".join(sorted({email.email.strip() for email in client.emails if email.email and email.email.strip()})),
-                client.trade_places[0].place if client.trade_places else "",
-                str(client.birth_date or ""),
-                client.client_source or "",
-                str(client.last_purchase_date or ""),
-                client.buyer_type or "",
-                client.counterparty_type or "",
-                client.status.value,
-            ],
-        )
+        worksheet.write_row(row_number, 0, [EXPORT_COLUMNS[value][1](client) for value in selected_columns])
     workbook.close()
     output.seek(0)
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=clients.xlsx"},
+    )
+
+
+def _email_report_xlsx(db: Session, report: dict) -> bytes:
+    """Формирует один email-файл с дедупликацией клиентов по наименованию."""
+    filtered_ids = apply_client_filters(
+        select(Client.id), manager=report.get("managers") or None,
+        price_type=report.get("price_types") or None,
+        buyer_type=report.get("buyer_types") or None,
+        counterparty_type=report.get("counterparty_types") or None,
+        has_email=True,
+    ).distinct().subquery()
+    clients = db.scalars(
+        select(Client).join(filtered_ids, filtered_ids.c.id == Client.id)
+        .options(selectinload(Client.emails)).order_by(Client.name, Client.id)
+    ).all()
+    output = BytesIO()
+    workbook = xlsxwriter.Workbook(output, {"in_memory": True})
+    worksheet = workbook.add_worksheet("Email")
+    worksheet.write_row(0, 0, ["Наименование", "Email"])
+    grouped: dict[str, tuple[str, set[str]]] = {}
+    for client in clients:
+        display_name = (client.name or "").strip()
+        name_key = display_name.casefold()
+        if not name_key:
+            continue
+        if name_key not in grouped:
+            grouped[name_key] = (display_name, set())
+        grouped[name_key][1].update(item.email.strip() for item in client.emails if item.email.strip())
+    row = 1
+    for display_name, emails in grouped.values():
+        for email in sorted(emails):
+            worksheet.write_row(row, 0, [display_name, email])
+            row += 1
+    worksheet.set_column(0, 0, 42)
+    worksheet.set_column(1, 1, 38)
+    workbook.close()
+    return output.getvalue()
+
+
+@router.get("/reports/email-update/config")
+def email_update_config(db: Session = Depends(get_db)):
+    managers = db.scalars(
+        select(Client.manager).where(Client.manager.is_not(None), Client.manager != "").distinct().order_by(Client.manager)
+    ).all()
+    return {"reports": DEFAULT_EMAIL_REPORTS, "managers": managers}
+
+
+@router.post("/reports/email-update.zip")
+def email_update_report(payload: dict, db: Session = Depends(get_db)):
+    reports = payload.get("reports")
+    if not isinstance(reports, list) or not reports:
+        raise HTTPException(status_code=422, detail="Добавьте хотя бы один файл отчёта")
+    archive = BytesIO()
+    used_names: set[str] = set()
+    with ZipFile(archive, "w", ZIP_DEFLATED) as zipped:
+        for index, report in enumerate(reports, start=1):
+            name = str(report.get("name") or f"Отчет {index}").strip()
+            safe_name = "".join(character for character in name if character not in '\\/:*?"<>|').strip() or f"Отчет {index}"
+            filename = f"{safe_name}.xlsx"
+            if filename.casefold() in used_names:
+                filename = f"{safe_name} ({index}).xlsx"
+            used_names.add(filename.casefold())
+            zipped.writestr(filename, _email_report_xlsx(db, report))
+    archive.seek(0)
+    return StreamingResponse(
+        archive, media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=email-update.zip"},
     )
