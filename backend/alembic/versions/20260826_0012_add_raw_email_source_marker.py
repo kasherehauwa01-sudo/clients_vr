@@ -14,16 +14,17 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "clients",
-        sa.Column("raw_email_source_known", sa.Boolean(), nullable=False, server_default=sa.false()),
-    )
-    # Если raw_email уже успел заполниться после предыдущей миграции, его
-    # происхождение достоверно: записать это поле мог только новый импортёр.
-    op.execute(sa.text(
-        "UPDATE clients SET raw_email_source_known = true WHERE raw_email IS NOT NULL"
-    ))
+    columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("clients")}
+    if "raw_email_source_known" not in columns:
+        op.add_column(
+            "clients",
+            sa.Column("raw_email_source_known", sa.Boolean(), nullable=False, server_default=sa.false()),
+        )
+    # Не выполняем массовый UPDATE 160 000+ клиентов во время старта
+    # контейнера. Маркер будет установлен обычным импортом конкретной записи.
 
 
 def downgrade() -> None:
-    op.drop_column("clients", "raw_email_source_known")
+    columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("clients")}
+    if "raw_email_source_known" in columns:
+        op.drop_column("clients", "raw_email_source_known")

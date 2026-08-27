@@ -1,5 +1,6 @@
 from pathlib import Path
 from contextlib import asynccontextmanager
+import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -13,6 +14,7 @@ import app.models.entities  # noqa: F401
 from app.services.ftp_scheduler import start_ftp_scheduler, stop_ftp_scheduler
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 base_path = settings.normalized_base_path
 if settings.auto_create_tables:
     Base.metadata.create_all(bind=engine)
@@ -38,9 +40,19 @@ class SpaStaticFiles(StaticFiles):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    start_ftp_scheduler()
-    yield
-    stop_ftp_scheduler()
+    scheduler_started = False
+    try:
+        start_ftp_scheduler()
+        scheduler_started = True
+    except Exception:
+        # Ошибка необязательной FTP-автозагрузки не должна выключать реестр,
+        # API и статический frontend целиком (nginx в таком случае отдаёт 502).
+        logger.exception("Не удалось запустить планировщик FTP; приложение продолжит работу")
+    try:
+        yield
+    finally:
+        if scheduler_started:
+            stop_ftp_scheduler()
 
 
 app = FastAPI(title=settings.app_name, root_path=base_path, lifespan=lifespan)

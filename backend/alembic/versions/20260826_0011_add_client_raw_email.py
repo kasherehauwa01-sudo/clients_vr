@@ -16,8 +16,12 @@ depends_on = None
 def upgrade() -> None:
     # Старые агрегированные emails нельзя безопасно разделить по источнику.
     # Поле заполнится при следующем импорте исходного XLS без ложного backfill.
-    op.add_column("clients", sa.Column("raw_email", sa.Text(), nullable=True))
+    columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("clients")}
+    if "raw_email" not in columns:
+        op.add_column("clients", sa.Column("raw_email", sa.Text(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("clients", "raw_email")
+    columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("clients")}
+    if "raw_email" in columns:
+        op.drop_column("clients", "raw_email")
