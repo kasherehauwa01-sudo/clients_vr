@@ -1,4 +1,15 @@
-from app.api.routes import DEFAULT_EMAIL_REPORTS, EXPORT_COLUMNS, _email_report_filename
+from io import BytesIO
+
+from openpyxl import Workbook
+
+from app.api.routes import (
+    DEFAULT_EMAIL_REPORTS,
+    EXPORT_COLUMNS,
+    RETAIL_EMAIL_REPORT_EXCLUDED_ABBREVIATIONS,
+    _emails_from_exclusion_xlsx,
+    _email_report_excludes_name,
+    _email_report_filename,
+)
 from app.models.entities import Client
 
 
@@ -25,6 +36,36 @@ def test_email_update_contains_all_default_files_and_filters() -> None:
 def test_email_report_uses_original_card_email_field() -> None:
     assert Client.__table__.c.raw_email.type.python_type is str
     assert Client.__table__.c.raw_email_source_known.type.python_type is bool
+
+
+def test_retail_email_report_excludes_organization_abbreviations() -> None:
+    report = {"name": "Розничные клиенты"}
+
+    for abbreviation in RETAIL_EMAIL_REPORT_EXCLUDED_ABBREVIATIONS:
+        assert _email_report_excludes_name(report, f'Магазин "Ромашка" {abbreviation}')
+        assert _email_report_excludes_name(report, f"{abbreviation.lower()} Ромашка")
+
+
+def test_retail_email_report_matches_only_separate_abbreviations() -> None:
+    report = {"name": "Розничные клиенты"}
+
+    assert not _email_report_excludes_name(report, "САОНА")
+    assert not _email_report_excludes_name(report, "ИПАТОВ")
+    assert not _email_report_excludes_name({"name": "Корпоративные клиенты"}, "ООО Ромашка")
+
+
+def test_email_exclusion_xlsx_reads_email_column_and_normalizes_values() -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append(["Наименование", " Email ", "Комментарий"])
+    worksheet.append(["Клиент", "FIRST@Example.com; second@example.org", ""])
+    worksheet.append(["Дубликат", "first@example.com", ""])
+    content = BytesIO()
+    workbook.save(content)
+
+    assert _emails_from_exclusion_xlsx(content.getvalue()) == {
+        "first@example.com", "second@example.org",
+    }
 
 
 def test_email_report_filename_ends_with_data_row_count() -> None:

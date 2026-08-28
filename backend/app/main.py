@@ -34,7 +34,11 @@ class SpaStaticFiles(StaticFiles):
         if response.status_code == 404 and not scope["path"].startswith("/api"):
             index_path = Path(self.directory) / "index.html"
             if index_path.exists():
-                return FileResponse(index_path)
+                response = FileResponse(index_path)
+        # index.html ссылается на хешированные Vite-ресурсы. Запрещаем хранить
+        # сам HTML в кеше, чтобы после выкладки браузер сразу увидел новый bundle.
+        if path in {"", ".", "index.html"} or response.media_type == "text/html":
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
 
 
