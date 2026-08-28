@@ -1,6 +1,7 @@
 from io import BytesIO
 import json
 import logging
+import re
 from time import monotonic
 from zipfile import ZIP_DEFLATED, ZipFile
 from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, File, HTTPException, Query, Response, UploadFile
@@ -39,6 +40,16 @@ DEFAULT_EMAIL_REPORTS = [
     {"name": "Суркова, Ромащенко, Бабушкина, Новожилова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "managers": ["Суркова Н.", "Ромащенко Екатерина", "Бабушкина Виктория", "Новожилова М."]},
     {"name": "Селянкина, Королева", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "managers": ["Селянкина Татьяна", "Королева Светлана"]},
 ]
+
+RETAIL_EMAIL_REPORT_NAME = "Розничные клиенты"
+RETAIL_EMAIL_REPORT_EXCLUDED_ABBREVIATIONS = (
+    "ООО", "ИП", "ГУП", "МОУ", "ЗАО", "ВАО", "АО", "МДОБУ",
+    "НПО", "ТД", "ОМОН", "МУП", "ОАО", "СК", "ТНП",
+)
+RETAIL_EMAIL_REPORT_EXCLUDED_NAME_PATTERN = re.compile(
+    rf"\b(?:{'|'.join(RETAIL_EMAIL_REPORT_EXCLUDED_ABBREVIATIONS)})\b",
+    re.IGNORECASE,
+)
 
 
 def require_settings_auth(clients_settings_session: str | None = Cookie(None)) -> None:
@@ -573,6 +584,8 @@ def _email_report_xlsx(db: Session, report: dict) -> tuple[bytes, int]:
     grouped: dict[str, tuple[str, set[str]]] = {}
     for client in clients:
         display_name = (client.name or "").strip()
+        if _email_report_excludes_name(report, display_name):
+            continue
         name_key = display_name.casefold()
         if not name_key:
             continue
@@ -596,6 +609,15 @@ def _email_report_xlsx(db: Session, report: dict) -> tuple[bytes, int]:
     worksheet.set_column(1, 1, 38)
     workbook.close()
     return output.getvalue(), row - 1
+
+
+def _email_report_excludes_name(report: dict, name: str) -> bool:
+    """Исключает организации из розничного email-файла по аббревиатуре."""
+    report_name = str(report.get("name") or "").strip()
+    return (
+        report_name.casefold() == RETAIL_EMAIL_REPORT_NAME.casefold()
+        and RETAIL_EMAIL_REPORT_EXCLUDED_NAME_PATTERN.search(name) is not None
+    )
 
 
 def _email_report_filename(name: str, row_count: int, index: int, used_names: set[str]) -> str:
