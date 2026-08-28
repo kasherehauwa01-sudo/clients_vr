@@ -550,7 +550,7 @@ def export_clients(
     )
 
 
-def _email_report_xlsx(db: Session, report: dict) -> bytes:
+def _email_report_xlsx(db: Session, report: dict) -> tuple[bytes, int]:
     """Формирует один email-файл с дедупликацией клиентов по наименованию."""
     filtered_ids = apply_client_filters(
         select(Client.id), manager=report.get("managers") or None,
@@ -596,7 +596,17 @@ def _email_report_xlsx(db: Session, report: dict) -> bytes:
     worksheet.set_column(0, 0, 42)
     worksheet.set_column(1, 1, 38)
     workbook.close()
-    return output.getvalue()
+    return output.getvalue(), row - 1
+
+
+def _email_report_filename(name: str, row_count: int, index: int, used_names: set[str]) -> str:
+    """Добавляет количество строк и гарантирует уникальность имени в ZIP."""
+    safe_name = "".join(character for character in name if character not in '\\/:*?"<>|').strip() or f"Отчет {index}"
+    filename = f"{safe_name}. {row_count}.xlsx"
+    if filename.casefold() in used_names:
+        filename = f"{safe_name} ({index}). {row_count}.xlsx"
+    used_names.add(filename.casefold())
+    return filename
 
 
 @router.get("/reports/email-update/config")
@@ -617,12 +627,9 @@ def email_update_report(payload: dict, db: Session = Depends(get_db)):
     with ZipFile(archive, "w", ZIP_DEFLATED) as zipped:
         for index, report in enumerate(reports, start=1):
             name = str(report.get("name") or f"Отчет {index}").strip()
-            safe_name = "".join(character for character in name if character not in '\\/:*?"<>|').strip() or f"Отчет {index}"
-            filename = f"{safe_name}.xlsx"
-            if filename.casefold() in used_names:
-                filename = f"{safe_name} ({index}).xlsx"
-            used_names.add(filename.casefold())
-            zipped.writestr(filename, _email_report_xlsx(db, report))
+            content, row_count = _email_report_xlsx(db, report)
+            filename = _email_report_filename(name, row_count, index, used_names)
+            zipped.writestr(filename, content)
     archive.seek(0)
     return StreamingResponse(
         archive, media_type="application/zip",

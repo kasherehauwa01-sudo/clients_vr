@@ -1,4 +1,4 @@
-from app.api.routes import DEFAULT_EMAIL_REPORTS, EXPORT_COLUMNS
+from app.api.routes import DEFAULT_EMAIL_REPORTS, EXPORT_COLUMNS, _email_report_filename
 from app.models.entities import Client
 
 
@@ -25,3 +25,17 @@ def test_email_update_contains_all_default_files_and_filters() -> None:
 def test_email_report_uses_original_card_email_field() -> None:
     assert Client.__table__.c.raw_email.type.python_type is str
     assert Client.__table__.c.raw_email_source_known.type.python_type is bool
+
+
+def test_email_report_filename_ends_with_data_row_count() -> None:
+    used_names: set[str] = set()
+    assert _email_report_filename("Корпоративные клиенты", 1889, 1, used_names) == (
+        "Корпоративные клиенты. 1889.xlsx"
+    )
+
+
+def test_duplicate_email_report_names_keep_count_and_are_unique() -> None:
+    used_names = {"корпоративные клиенты. 1889.xlsx"}
+    assert _email_report_filename("Корпоративные клиенты", 1889, 2, used_names) == (
+        "Корпоративные клиенты (2). 1889.xlsx"
+    )
