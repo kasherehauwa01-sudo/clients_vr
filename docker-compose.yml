@@ -2,6 +2,8 @@ services:
   app:
     build: .
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       CLIENTS_DATABASE_URL: postgresql+psycopg://clients:clients@postgres:5432/clients
       CLIENTS_PUBLIC_BASE_PATH: /vr/clients
@@ -10,6 +12,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - ./.env:/app/.env
     ports:
       - "127.0.0.1:8015:8000"
     healthcheck:
