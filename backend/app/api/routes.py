@@ -672,13 +672,22 @@ async def upload_email_exclusions(category: str, file: UploadFile = File(...), d
     if not (file.filename or "").lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="Загрузите файл в формате XLSX")
     emails = _emails_from_exclusion_xlsx(await file.read())
-    db.execute(delete(EmailReportExclusion).where(EmailReportExclusion.category == category))
-    if emails:
+    existing_emails = set(db.scalars(
+        select(EmailReportExclusion.email).where(EmailReportExclusion.category == category)
+    ).all())
+    new_emails = emails - existing_emails
+    if new_emails:
         db.execute(insert(EmailReportExclusion), [
-            {"category": category, "email": email} for email in sorted(emails)
+            {"category": category, "email": email} for email in sorted(new_emails)
         ])
     db.commit()
-    return {"category": category, "emails": sorted(emails), "count": len(emails)}
+    updated_emails = sorted(existing_emails | emails)
+    return {
+        "category": category,
+        "emails": updated_emails,
+        "count": len(updated_emails),
+        "added_count": len(new_emails),
+    }
 
 
 def _email_report_filename(name: str, row_count: int, index: int, used_names: set[str]) -> str:
