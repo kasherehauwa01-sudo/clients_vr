@@ -10,7 +10,7 @@ type PresenceFilter = '' | 'true' | 'false';
 type FilterOptions = { managers: string[]; price_types: string[]; buyer_types: string[]; counterparty_types: string[] };
 type LogEntry = { id: string; created_at?: string; source: string; level: string; process: string; row_number?: number; message: string };
 type ExportColumn = 'name' | 'company' | 'manager' | 'phones' | 'emails';
-type EmailReport = { name: string; price_types: string[]; buyer_types: string[]; counterparty_types: string[]; managers: string[] };
+type EmailReport = { name: string; price_types: string[]; buyer_types: string[]; managers: string[] };
 
 const formatMoscowTime = (value?: string) => {
   if (!value) return '—';
@@ -282,20 +282,24 @@ function ExportDialog({ onClose, onExport }: { onClose: () => void; onExport: (c
   return <SimpleDialog title="Скачать реестр" onClose={onClose}><p>Выберите колонки итоговой таблицы.</p><div className="column-choices">{labels.map(([value, label]) => <label key={value}><input type="checkbox" checked={selected.includes(value)} onChange={() => toggle(value)} />{label}</label>)}</div><div className="filter-actions"><button className="tonal" onClick={onClose}>Отмена</button><button className="primary-action" disabled={!selected.length || busy} onClick={async () => { setBusy(true); try { await onExport(selected); onClose(); } finally { setBusy(false); } }}>{busy ? 'Формирование…' : 'Скачать'}</button></div></SimpleDialog>;
 }
 
-const listValue = (values: string[]) => values.join(', ');
-const parseList = (value: string) => value.split(',').map(item => item.trim()).filter(Boolean);
-
 function EmailReportDialog({ managers, onClose }: { managers: string[]; onClose: () => void }) {
   const [reports, setReports] = useState<EmailReport[]>([]);
   const [availableManagers, setAvailableManagers] = useState(managers);
+  const [availablePriceTypes, setAvailablePriceTypes] = useState<string[]>([]);
+  const [availableBuyerTypes, setAvailableBuyerTypes] = useState<string[]>([]);
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState('Проверка условий…');
   useEffect(() => {
     api('/reports/email-update/config').then(data => {
       const saved = localStorage.getItem('clients-email-reports');
-      try { setReports(saved ? JSON.parse(saved) : data.reports); }
+      try {
+        const source = saved ? JSON.parse(saved) : data.reports;
+        setReports(source.map((report: any) => ({ name: report.name, price_types: report.price_types || [], buyer_types: report.buyer_types || [], managers: report.managers || [] })));
+      }
       catch { localStorage.removeItem('clients-email-reports'); setReports(data.reports); }
       setAvailableManagers(data.managers);
+      setAvailablePriceTypes(data.price_types);
+      setAvailableBuyerTypes(data.buyer_types);
       setMessage('Проверьте будущие файлы и применяемые фильтры.');
     }).catch(error => setMessage(String(error))).finally(() => setBusy(false));
   }, []);
@@ -303,10 +307,10 @@ function EmailReportDialog({ managers, onClose }: { managers: string[]; onClose:
   const update = (index: number, key: keyof EmailReport, value: string | string[]) => save(reports.map((report, reportIndex) => reportIndex === index ? { ...report, [key]: value } : report));
   const selectedManagers = new Set(reports.flatMap(report => report.managers));
   const unselectedManagers = availableManagers.filter(manager => !selectedManagers.has(manager));
-  const renderReport = (report: EmailReport, index: number) => <article className="report-file" key={`${report.name}-${index}`}><div className="report-file-heading"><input aria-label="Название файла" value={report.name} onChange={event => update(index, 'name', event.target.value)} /><button className="danger-action" onClick={() => save(reports.filter((_, reportIndex) => reportIndex !== index))}>Удалить</button></div><div className="report-filter-grid"><label>Тип цены<input value={listValue(report.price_types)} onChange={event => update(index, 'price_types', parseList(event.target.value))} /></label><label>Вид покупателя<input value={listValue(report.buyer_types)} onChange={event => update(index, 'buyer_types', parseList(event.target.value))} /></label><label>Вид контрагента<input value={listValue(report.counterparty_types)} onChange={event => update(index, 'counterparty_types', parseList(event.target.value))} /></label><label>Менеджер<input value={listValue(report.managers)} onChange={event => update(index, 'managers', parseList(event.target.value))} placeholder="Без фильтра" /></label></div><p>Источник: поле «Email» карточки клиента · дедупликация по Наименованию · отдельная строка для каждого Email.</p></article>;
+  const renderReport = (report: EmailReport, index: number) => <article className="report-file" key={`${report.name}-${index}`}><div className="report-file-heading"><input aria-label="Название файла" value={report.name} onChange={event => update(index, 'name', event.target.value)} /><button className="danger-action" onClick={() => save(reports.filter((_, reportIndex) => reportIndex !== index))}>Удалить</button></div><div className="report-filter-grid"><MultiFilter title="Тип цены" values={availablePriceTypes} selected={report.price_types} onChange={values => update(index, 'price_types', values)} /><MultiFilter title="Вид покупателя" values={availableBuyerTypes} selected={report.buyer_types} onChange={values => update(index, 'buyer_types', values)} /><MultiFilter title="Менеджер" values={availableManagers} selected={report.managers} onChange={values => update(index, 'managers', values)} searchable /></div><p>Источник: поле «Email» карточки клиента · дедупликация по Наименованию · отдельная строка для каждого Email.</p></article>;
   const fixed = reports.slice(0, 2);
   const wholesale = reports.slice(2);
-  return <SimpleDialog title="Отчет «Обновление email»" onClose={onClose}><p className="report-message">{message}</p>{!busy && <div className="report-builder"><section><h3>Корпоративные и розничные клиенты</h3>{fixed.map(report => renderReport(report, reports.indexOf(report)))}</section><section><div className="report-section-heading"><h3>Оптовые клиенты</h3><button className="tonal" onClick={() => save([...reports, { name: 'Новый файл', price_types: ['Оптовые'], buyer_types: ['Оптовик'], counterparty_types: ['Организация'], managers: [] }])}>Добавить файл</button></div>{wholesale.map(report => renderReport(report, reports.indexOf(report)))}<aside className="unselected-managers"><b>Не распределены по файлам:</b><p>{unselectedManagers.join(', ') || 'Все менеджеры распределены'}</p></aside></section></div>}<div className="filter-actions"><button className="tonal" onClick={onClose}>Отмена</button><button className="primary-action" disabled={busy || !reports.length} onClick={async () => { setBusy(true); setMessage('Формирование ZIP-архива…'); try { await downloadResponse('/reports/email-update.zip', 'Обновление email.zip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reports }) }); setMessage('Архив сформирован.'); } catch (error) { setMessage(String(error)); } finally { setBusy(false); } }}>Сформировать</button></div></SimpleDialog>;
+  return <SimpleDialog title="Отчет «Обновление email»" onClose={onClose}><p className="report-message">{message}</p>{!busy && <div className="report-builder"><section><h3>Корпоративные и розничные клиенты</h3>{fixed.map(report => renderReport(report, reports.indexOf(report)))}</section><section><div className="report-section-heading"><h3>Оптовые клиенты</h3><button className="tonal" onClick={() => save([...reports, { name: 'Новый файл', price_types: ['Оптовые'], buyer_types: ['Оптовик'], managers: [] }])}>Добавить файл</button></div>{wholesale.map(report => renderReport(report, reports.indexOf(report)))}<aside className="unselected-managers"><b>Не распределены по файлам:</b><p>{unselectedManagers.join(', ') || 'Все менеджеры распределены'}</p></aside></section></div>}<div className="filter-actions"><button className="tonal" onClick={onClose}>Отмена</button><button className="primary-action" disabled={busy || !reports.length} onClick={async () => { setBusy(true); setMessage('Формирование ZIP-архива…'); try { await downloadResponse('/reports/email-update.zip', 'Обновление email.zip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reports }) }); setMessage('Архив сформирован.'); } catch (error) { setMessage(String(error)); } finally { setBusy(false); } }}>Сформировать</button></div></SimpleDialog>;
 }
 
 function ClientsHeader({ activeTab, onTabChange, query, onOpenFilters }: ClientsHeaderProps) {

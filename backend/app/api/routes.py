@@ -30,14 +30,14 @@ EXPORT_COLUMNS = {
 }
 
 DEFAULT_EMAIL_REPORTS = [
-    {"name": "Корпоративные клиенты", "price_types": ["Корпоративные"], "buyer_types": ["Корпоративный"], "counterparty_types": ["Организация"], "managers": []},
-    {"name": "Розничные клиенты", "price_types": ["Розничные"], "buyer_types": ["Розница"], "counterparty_types": ["Частное лицо"], "managers": []},
-    {"name": "Пашута ОПТ", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Пашута М.С.", "Пашута М.С. (Ростов)"]},
-    {"name": "Родина, Самойлова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Родина", "Самойлова", "Родина Е.В. (Ростов)"]},
-    {"name": "Трошина, Гончарова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Трошина Лариса"]},
-    {"name": "Шакулова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Шакулова Екатерина"]},
-    {"name": "Суркова, Ромащенко, Бабушкина, Новожилова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Суркова Н.", "Ромащенко Екатерина", "Бабушкина Виктория", "Новожилова М."]},
-    {"name": "Селянкина, Королева", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "counterparty_types": ["Организация"], "managers": ["Селянкина Татьяна", "Королева Светлана"]},
+    {"name": "Корпоративные клиенты", "price_types": ["Корпоративные"], "buyer_types": ["Корпоративный"], "managers": []},
+    {"name": "Розничные клиенты", "price_types": ["Розничные"], "buyer_types": ["Розница"], "managers": []},
+    {"name": "Пашута ОПТ", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "managers": ["Пашута М.С.", "Пашута М.С. (Ростов)"]},
+    {"name": "Родина, Самойлова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "managers": ["Родина", "Самойлова", "Родина Е.В. (Ростов)"]},
+    {"name": "Трошина, Гончарова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "managers": ["Трошина Лариса"]},
+    {"name": "Шакулова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "managers": ["Шакулова Екатерина"]},
+    {"name": "Суркова, Ромащенко, Бабушкина, Новожилова", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "managers": ["Суркова Н.", "Ромащенко Екатерина", "Бабушкина Виктория", "Новожилова М."]},
+    {"name": "Селянкина, Королева", "price_types": ["Оптовые"], "buyer_types": ["Оптовик"], "managers": ["Селянкина Татьяна", "Королева Светлана"]},
 ]
 
 
@@ -556,7 +556,6 @@ def _email_report_xlsx(db: Session, report: dict) -> tuple[bytes, int]:
         select(Client.id), manager=report.get("managers") or None,
         price_type=report.get("price_types") or None,
         buyer_type=report.get("buyer_types") or None,
-        counterparty_type=report.get("counterparty_types") or None,
     ).distinct().subquery()
     clients = db.scalars(
         select(Client).join(filtered_ids, filtered_ids.c.id == Client.id)
@@ -614,7 +613,13 @@ def email_update_config(db: Session = Depends(get_db)):
     managers = db.scalars(
         select(Client.manager).where(Client.manager.is_not(None), Client.manager != "").distinct().order_by(Client.manager)
     ).all()
-    return {"reports": DEFAULT_EMAIL_REPORTS, "managers": managers}
+    price_types = db.scalars(
+        select(Client.price_type).where(Client.price_type.is_not(None), Client.price_type != "").distinct().order_by(Client.price_type)
+    ).all()
+    buyer_types = db.scalars(
+        select(Client.buyer_type).where(Client.buyer_type.is_not(None), Client.buyer_type != "").distinct().order_by(Client.buyer_type)
+    ).all()
+    return {"reports": DEFAULT_EMAIL_REPORTS, "managers": managers, "price_types": price_types, "buyer_types": buyer_types}
 
 
 @router.post("/reports/email-update.zip")

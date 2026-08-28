@@ -17,7 +17,7 @@ def test_email_update_contains_all_default_files_and_filters() -> None:
         "Суркова, Ромащенко, Бабушкина, Новожилова", "Селянкина, Королева",
     ]
     assert reports["Корпоративные клиенты"]["price_types"] == ["Корпоративные"]
-    assert reports["Розничные клиенты"]["counterparty_types"] == ["Частное лицо"]
+    assert all("counterparty_types" not in report for report in reports.values())
     assert reports["Пашута ОПТ"]["managers"] == ["Пашута М.С.", "Пашута М.С. (Ростов)"]
     assert reports["Родина, Самойлова"]["managers"] == ["Родина", "Самойлова", "Родина Е.В. (Ростов)"]
 
