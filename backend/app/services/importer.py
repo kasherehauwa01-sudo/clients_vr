@@ -387,7 +387,8 @@ def _sync_children(client: Client, emails: list[str], sms: list[str], common: li
     existing_phones = {(phone.phone, phone.type) for phone in client.phones}
     for phone, phone_type in [(value, PhoneType.sms) for value in sms] + [(value, PhoneType.common) for value in common]:
         if (phone, phone_type) not in existing_phones:
-            client.phones.append(Phone(phone=phone, type=phone_type))
+            normalized = normalize_phone(phone)
+            client.phones.append(Phone(phone=phone, normalized_phone=normalized[-10:] if normalized else None, type=phone_type))
             existing_phones.add((phone, phone_type))
     existing_places = {place.place for place in client.trade_places}
     for place in dict.fromkeys(places):

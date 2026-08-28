@@ -56,6 +56,9 @@ class Phone(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
     phone: Mapped[str] = mapped_column(String(32), index=True)
+    # Последние 10 цифр хранятся отдельно, чтобы поиск карточки не выполнял
+    # полнотабличный LIKE по отображаемому значению телефона.
+    normalized_phone: Mapped[str | None] = mapped_column(String(10), index=True)
     type: Mapped[PhoneType] = mapped_column(Enum(PhoneType), index=True)
     client = relationship("Client", back_populates="phones")
     __table_args__ = (UniqueConstraint("client_id", "phone", "type", name="uq_client_phone_type"),)
