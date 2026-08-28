@@ -11,6 +11,7 @@ type FilterOptions = { managers: string[]; price_types: string[]; buyer_types: s
 type LogEntry = { id: string; created_at?: string; source: string; level: string; process: string; row_number?: number; message: string };
 type ExportColumn = 'name' | 'company' | 'manager' | 'phones' | 'emails';
 type EmailReport = { name: string; price_types: string[]; buyer_types: string[]; managers: string[] };
+type EmailExclusionCategory = 'unsubscribed' | 'problematic';
 
 const formatMoscowTime = (value?: string) => {
   if (!value) return '—';
@@ -289,6 +290,11 @@ function EmailReportDialog({ managers, onClose }: { managers: string[]; onClose:
   const [availableBuyerTypes, setAvailableBuyerTypes] = useState<string[]>([]);
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState('Проверка условий…');
+  const [dialogTab, setDialogTab] = useState<'filters' | 'exclusions'>('filters');
+  const [exclusionCategory, setExclusionCategory] = useState<EmailExclusionCategory | null>(null);
+  const [exclusionEmails, setExclusionEmails] = useState<string[]>([]);
+  const [exclusionBusy, setExclusionBusy] = useState(false);
+  const exclusionFileRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     api('/reports/email-update/config').then(data => {
       const saved = localStorage.getItem('clients-email-reports');
@@ -310,7 +316,30 @@ function EmailReportDialog({ managers, onClose }: { managers: string[]; onClose:
   const renderReport = (report: EmailReport, index: number) => <article className="report-file" key={`${report.name}-${index}`}><div className="report-file-heading"><input aria-label="Название файла" value={report.name} onChange={event => update(index, 'name', event.target.value)} /><button className="danger-action" onClick={() => save(reports.filter((_, reportIndex) => reportIndex !== index))}>Удалить</button></div><div className="report-filter-grid"><MultiFilter title="Тип цены" values={availablePriceTypes} selected={report.price_types} onChange={values => update(index, 'price_types', values)} /><MultiFilter title="Вид покупателя" values={availableBuyerTypes} selected={report.buyer_types} onChange={values => update(index, 'buyer_types', values)} /><MultiFilter title="Менеджер" values={availableManagers} selected={report.managers} onChange={values => update(index, 'managers', values)} searchable /></div><p>Источник: поле «Email» карточки клиента · дедупликация по Наименованию · отдельная строка для каждого Email.</p></article>;
   const fixed = reports.slice(0, 2);
   const wholesale = reports.slice(2);
-  return <SimpleDialog title="Отчет «Обновление email»" onClose={onClose}><p className="report-message">{message}</p>{!busy && <div className="report-builder"><section><h3>Корпоративные и розничные клиенты</h3>{fixed.map(report => renderReport(report, reports.indexOf(report)))}</section><section><div className="report-section-heading"><h3>Оптовые клиенты</h3><button className="tonal" onClick={() => save([...reports, { name: 'Новый файл', price_types: ['Оптовые'], buyer_types: ['Оптовик'], managers: [] }])}>Добавить файл</button></div>{wholesale.map(report => renderReport(report, reports.indexOf(report)))}<aside className="unselected-managers"><b>Не распределены по файлам:</b><p>{unselectedManagers.join(', ') || 'Все менеджеры распределены'}</p></aside></section></div>}<div className="filter-actions"><button className="tonal" onClick={onClose}>Отмена</button><button className="primary-action" disabled={busy || !reports.length} onClick={async () => { setBusy(true); setMessage('Формирование ZIP-архива…'); try { await downloadResponse('/reports/email-update.zip', 'Обновление email.zip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reports }) }); setMessage('Архив сформирован.'); } catch (error) { setMessage(String(error)); } finally { setBusy(false); } }}>Сформировать</button></div></SimpleDialog>;
+  const openExclusionList = async (category: EmailExclusionCategory) => {
+    setExclusionCategory(category); setExclusionBusy(true);
+    try { setExclusionEmails((await api(`/reports/email-update/exclusions/${category}`)).emails); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setExclusionBusy(false); }
+  };
+  const uploadExclusions = async (file?: File) => {
+    if (!file || !exclusionCategory) return;
+    const body = new FormData(); body.append('file', file); setExclusionBusy(true);
+    try {
+      const result = await api(`/reports/email-update/exclusions/${exclusionCategory}`, { method: 'POST', body });
+      setExclusionEmails(result.emails); setMessage(`Добавлено новых адресов: ${result.added_count}. Всего в списке: ${result.count}.`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setExclusionBusy(false); if (exclusionFileRef.current) exclusionFileRef.current.value = ''; }
+  };
+  const exclusionTitle = exclusionCategory === 'unsubscribed' ? 'Отписавшиеся' : 'Проблемные';
+  return <SimpleDialog title="Отчет «Обновление email»" onClose={onClose}>
+    <div className="report-tabs" role="tablist"><button className={dialogTab === 'filters' ? 'selected' : ''} onClick={() => { setDialogTab('filters'); setExclusionCategory(null); }}>Фильтры</button><button className={dialogTab === 'exclusions' ? 'selected' : ''} onClick={() => setDialogTab('exclusions')}>Исключения</button></div>
+    <p className="report-message">{message}</p>
+    {dialogTab === 'filters' && !busy && <div className="report-builder"><section><h3>Корпоративные и розничные клиенты</h3>{fixed.map(report => renderReport(report, reports.indexOf(report)))}</section><section><div className="report-section-heading"><h3>Оптовые клиенты</h3><button className="tonal" onClick={() => save([...reports, { name: 'Новый файл', price_types: ['Оптовые'], buyer_types: ['Оптовик'], managers: [] }])}>Добавить файл</button></div>{wholesale.map(report => renderReport(report, reports.indexOf(report)))}<aside className="unselected-managers"><b>Не распределены по файлам:</b><p>{unselectedManagers.join(', ') || 'Все менеджеры распределены'}</p></aside></section></div>}
+    {dialogTab === 'exclusions' && !exclusionCategory && <div className="exclusion-choices"><p>Адреса из этих списков не попадут ни в один файл отчёта.</p><button onClick={() => openExclusionList('unsubscribed')}>Отписавшиеся</button><button onClick={() => openExclusionList('problematic')}>Проблемные</button></div>}
+    {dialogTab === 'exclusions' && exclusionCategory && <section className="exclusion-list"><div className="report-section-heading"><div><button className="back-link" onClick={() => setExclusionCategory(null)}>← Исключения</button><h3>{exclusionTitle}</h3></div><button className="primary-action" disabled={exclusionBusy} onClick={() => exclusionFileRef.current?.click()}>Загрузить список</button><input ref={exclusionFileRef} hidden type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => uploadExclusions(event.target.files?.[0])} /></div><p>Загрузите XLSX с колонкой «Email». Новые адреса добавятся к уже загруженным, дубликаты будут пропущены.</p>{exclusionBusy ? <p>Загрузка…</p> : <div className="exclusion-email-list"><b>Адресов: {exclusionEmails.length}</b>{exclusionEmails.length ? <ul>{exclusionEmails.map(email => <li key={email}>{email}</li>)}</ul> : <p>Список пока пуст.</p>}</div>}</section>}
+    <div className="filter-actions"><button className="tonal" onClick={onClose}>Отмена</button>{dialogTab === 'filters' && <button className="primary-action" disabled={busy || !reports.length} onClick={async () => { setBusy(true); setMessage('Формирование ZIP-архива…'); try { await downloadResponse('/reports/email-update.zip', 'Обновление email.zip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reports }) }); setMessage('Архив сформирован.'); } catch (error) { setMessage(String(error)); } finally { setBusy(false); } }}>Сформировать</button>}</div>
+  </SimpleDialog>;
 }
 
 function ClientsHeader({ activeTab, onTabChange, query, onOpenFilters }: ClientsHeaderProps) {

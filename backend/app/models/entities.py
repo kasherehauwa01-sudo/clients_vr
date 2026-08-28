@@ -73,6 +73,15 @@ class Email(Base):
     __table_args__ = (UniqueConstraint("client_id", "email", name="uq_client_email"),)
 
 
+class EmailReportExclusion(Base):
+    __tablename__ = "email_report_exclusions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    category: Mapped[str] = mapped_column(String(32), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    __table_args__ = (UniqueConstraint("category", "email", name="uq_email_report_exclusion_category_email"),)
+
+
 class TradePlace(Base):
     __tablename__ = "trade_places"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

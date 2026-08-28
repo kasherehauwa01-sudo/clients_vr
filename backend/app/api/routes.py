@@ -9,8 +9,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import case, delete, func, insert, literal, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 import xlsxwriter
+from openpyxl import load_workbook
 from app.db.session import get_db
-from app.models.entities import AuditLog, Client, ClientChange, ClientStatus, Email, FtpImportEvent, Import, ImportIssue, Phone, TradePlace
+from app.models.entities import AuditLog, Client, ClientChange, ClientStatus, Email, EmailReportExclusion, FtpImportEvent, Import, ImportIssue, Phone, TradePlace
 from app.schemas.client import BulkUpdate, ClientDetail, ClientListItem, PagedClients
 from app.services.import_tasks import create_import_task, get_import_task, run_import_task
 from app.services.ftp_import import get_ftp_settings, get_ftp_status, mark_ftp_pending, run_ftp_import, save_ftp_settings, test_connection
@@ -50,6 +51,7 @@ RETAIL_EMAIL_REPORT_EXCLUDED_NAME_PATTERN = re.compile(
     rf"\b(?:{'|'.join(RETAIL_EMAIL_REPORT_EXCLUDED_ABBREVIATIONS)})\b",
     re.IGNORECASE,
 )
+EMAIL_EXCLUSION_CATEGORIES = {"unsubscribed", "problematic"}
 
 
 def require_settings_auth(clients_settings_session: str | None = Cookie(None)) -> None:
@@ -581,6 +583,9 @@ def _email_report_xlsx(db: Session, report: dict) -> tuple[bytes, int]:
     workbook = xlsxwriter.Workbook(output, {"in_memory": True})
     worksheet = workbook.add_worksheet("Email")
     worksheet.write_row(0, 0, ["Наименование", "Email"])
+    excluded_emails = {
+        value.casefold() for value in db.scalars(select(EmailReportExclusion.email)).all()
+    }
     grouped: dict[str, tuple[str, set[str]]] = {}
     for client in clients:
         display_name = (client.name or "").strip()
@@ -599,7 +604,7 @@ def _email_report_xlsx(db: Session, report: dict) -> tuple[bytes, int]:
             if client.raw_email_source_known
             else [item.email.strip() for item in client.emails if item.email.strip()]
         )
-        grouped[name_key][1].update(emails)
+        grouped[name_key][1].update(email for email in emails if email.casefold() not in excluded_emails)
     row = 1
     for display_name, emails in grouped.values():
         for email in sorted(emails):
@@ -618,6 +623,71 @@ def _email_report_excludes_name(report: dict, name: str) -> bool:
         report_name.casefold() == RETAIL_EMAIL_REPORT_NAME.casefold()
         and RETAIL_EMAIL_REPORT_EXCLUDED_NAME_PATTERN.search(name) is not None
     )
+
+
+def _emails_from_exclusion_xlsx(content: bytes) -> set[str]:
+    """Читает и нормализует адреса из колонки Email первой страницы XLSX."""
+    try:
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+    except Exception as error:
+        raise HTTPException(status_code=422, detail="Не удалось прочитать XLSX-файл") from error
+    worksheet = workbook.active
+    rows = worksheet.iter_rows(values_only=True)
+    headers = next(rows, ())
+    email_column = next(
+        (index for index, value in enumerate(headers) if str(value or "").strip().casefold() == "email"),
+        None,
+    )
+    if email_column is None:
+        raise HTTPException(status_code=422, detail="В XLSX-файле не найдена колонка Email")
+    emails: set[str] = set()
+    for row in rows:
+        if email_column >= len(row):
+            continue
+        emails.update(email.casefold() for email in extract_emails(str(row[email_column] or "")))
+    return emails
+
+
+def _validate_email_exclusion_category(category: str) -> None:
+    if category not in EMAIL_EXCLUSION_CATEGORIES:
+        raise HTTPException(status_code=404, detail="Неизвестный список исключений")
+
+
+@router.get("/reports/email-update/exclusions/{category}")
+def email_exclusions(category: str, db: Session = Depends(get_db)):
+    _validate_email_exclusion_category(category)
+    return {
+        "category": category,
+        "emails": db.scalars(
+            select(EmailReportExclusion.email)
+            .where(EmailReportExclusion.category == category)
+            .order_by(EmailReportExclusion.email)
+        ).all(),
+    }
+
+
+@router.post("/reports/email-update/exclusions/{category}")
+async def upload_email_exclusions(category: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    _validate_email_exclusion_category(category)
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(status_code=422, detail="Загрузите файл в формате XLSX")
+    emails = _emails_from_exclusion_xlsx(await file.read())
+    existing_emails = set(db.scalars(
+        select(EmailReportExclusion.email).where(EmailReportExclusion.category == category)
+    ).all())
+    new_emails = emails - existing_emails
+    if new_emails:
+        db.execute(insert(EmailReportExclusion), [
+            {"category": category, "email": email} for email in sorted(new_emails)
+        ])
+    db.commit()
+    updated_emails = sorted(existing_emails | emails)
+    return {
+        "category": category,
+        "emails": updated_emails,
+        "count": len(updated_emails),
+        "added_count": len(new_emails),
+    }
 
 
 def _email_report_filename(name: str, row_count: int, index: int, used_names: set[str]) -> str:
