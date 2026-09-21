@@ -146,3 +146,5 @@ class AuditLog(Base):
 
 
 Index("ix_clients_name_company", Client.name, Client.company)
+Index("ix_clients_manager_normalized", func.lower(func.trim(Client.manager)))
+Index("ix_clients_name_normalized", func.lower(func.trim(Client.name)))
