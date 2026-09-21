@@ -4,7 +4,7 @@ import logging
 import re
 from time import monotonic
 from zipfile import ZIP_DEFLATED, ZipFile
-from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import case, delete, func, insert, literal, or_, select, update
 from sqlalchemy.orm import Session, selectinload
@@ -19,6 +19,7 @@ from app.services.ftp_scheduler import refresh_ftp_schedule
 from app.services.settings_auth import COOKIE_NAME, authenticate_settings, is_settings_authenticated, logout_settings
 from app.services.client_changes import payload_signature, record_client_change
 from app.services.normalization import extract_emails
+from app.api.sales_journal import sales_journal_clients
 
 router = APIRouter(prefix="/api", tags=["clients"])
 import_logger = logging.getLogger("clients.import")
@@ -175,8 +176,9 @@ def apply_client_filters(
     return query
 
 
-@router.get("/clients", response_model=PagedClients)
+@router.get("/clients", response_model=PagedClients | list[str])
 def clients(
+    request: Request,
     db: Session = Depends(get_db),
     page: int = 1,
     page_size: str = "100",
@@ -196,6 +198,14 @@ def clients(
     sort: str = "name",
     order: str = "asc",
 ):
+    # У интеграционного запроса есть только параметр manager. Параметры
+    # пагинации/фильтрации сохраняют прежний контракт реестра клиентов.
+    query_keys = set(request.query_params.keys())
+    if query_keys.issubset({"manager"}):
+        if not manager or len(manager) != 1 or not manager[0].strip():
+            raise HTTPException(status_code=422, detail="Параметр manager обязателен и не должен быть пустым")
+        return sales_journal_clients(manager[0], db)
+
     page = max(page, 1)
     show_all = page_size == "all"
     try:
