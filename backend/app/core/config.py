@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["https://kvasmix.ru", "http://localhost:5173", "http://localhost:8015"]
     auto_create_tables: bool = True
     public_base_path: str = "/vr/clients"
+    integration_token: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="CLIENTS_", extra="ignore")
 
