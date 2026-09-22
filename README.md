@@ -243,42 +243,65 @@ delta от сохранённого cursor до `has_more=false`.
 ```
 
 
-## API интеграции с «Журналом продаж»
+## Integration API для «Журнала продаж»
 
-Базовый production URL, который необходимо указать в `CLIENTS_VR_API_URL` сервиса
-`sales-journal`:
+Базовый production URL для `CLIENTS_VR_API_URL`:
 
 ```text
 https://kvasmix.ru/vr/clients/api
 ```
 
-Интеграционные методы доступны без отдельного сервисного токена, как и остальные
-read-only методы справочника:
+Все методы `/api/integration/*` используют единый Bearer-токен из переменной
+`CLIENTS_INTEGRATION_TOKEN`. Значение токена передаётся только в заголовке
+`Authorization` и не должно попадать в URL или логи.
 
-- `GET /api/managers` — уникальный алфавитный список менеджеров неархивных клиентов;
-- `GET /api/clients?manager=<имя>` — уникальный алфавитный список неархивных клиентов
-  менеджера. Имя сравнивается целиком, без учёта регистра и внешних пробелов.
+### Менеджеры и клиенты
 
-Оба метода возвращают JSON-массив строк. Для второго метода `manager` обязателен;
-при неизвестном менеджере возвращается `200` и пустой массив.
+- `GET /api/integration/managers` — уникальные менеджеры;
+- `GET /api/integration/clients` — клиенты интеграции;
+- `GET /api/integration/clients?manager=Иванов Иван` — клиенты менеджера.
+
+Существующие совместимые методы `GET /api/managers` и
+`GET /api/clients?manager=...` сохраняют прежний формат массива строк.
+
+### Виды покупателей
+
+`GET /api/integration/buyer-types` возвращает уникальные непустые значения поля
+«Вид покупателя» из неархивных клиентов:
+
+```json
+["HoReCa", "Розница"]
+```
+
+`GET /api/integration/clients?buyer_type=HoReCa` фильтрует клиентов по точному
+значению без учёта регистра и внешних пробелов. Неизвестное значение возвращает
+пустой массив. Фильтр `buyer_type` можно комбинировать с `manager`; в этом случае
+клиент должен удовлетворять обоим условиям.
+
+```json
+[
+  {
+    "id": 123,
+    "client": "ООО Ромашка",
+    "name": "ООО Ромашка",
+    "manager": "Иванов Иван",
+    "buyer_type": "HoReCa"
+  }
+]
+```
+
+Совместимый вложенный endpoint
+`GET /api/integration/buyer-types/{buyer_type}/clients` возвращает тот же формат.
+Клиенты без заполненного вида покупателя в нефильтрованной выдаче получают
+`"buyer_type": null`.
 
 ```bash
-curl "https://kvasmix.ru/vr/clients/api/managers"
+curl \
+  -H "Authorization: Bearer $CLIENTS_INTEGRATION_TOKEN" \
+  "https://kvasmix.ru/vr/clients/api/integration/buyer-types"
 
 curl -G \
-  --data-urlencode "manager=Иванов Иван" \
-  "https://kvasmix.ru/vr/clients/api/clients"
+  -H "Authorization: Bearer $CLIENTS_INTEGRATION_TOKEN" \
+  --data-urlencode "buyer_type=HoReCa" \
+  "https://kvasmix.ru/vr/clients/api/integration/clients"
 ```
-
-Примеры ответов:
-
-```json
-["Иванов Иван", "Петров Пётр"]
-```
-
-```json
-["ООО Альфа", "ООО Бета"]
-```
-
-Существующий endpoint реестра клиентов продолжает возвращать объект с пагинацией,
-когда в запросе передан любой его параметр (например, `page` или `page_size`).

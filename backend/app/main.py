@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.api.routes import router
 from app.api.client_directory import router as client_directory_router
-from app.api.sales_journal import router as sales_journal_router
+from app.api.sales_journal import integration_router, router as sales_journal_router
 from app.core.config import get_settings
 from app.db.session import Base, engine
 import app.models.entities  # noqa: F401
@@ -67,6 +67,7 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_cr
 # динамического маршрута /api/clients/{client_id} основного router.
 app.include_router(client_directory_router)
 app.include_router(sales_journal_router)
+app.include_router(integration_router)
 app.include_router(router)
 static_dir = Path("/app/static")
 if static_dir.exists():
