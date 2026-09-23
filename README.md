@@ -18,6 +18,12 @@ https://kvasmix.ru/vr/clients/
 - Экспорт списка клиентов в Excel.
 - Массовое удаление, архивирование, смена менеджера и типа цены.
 
+В фильтрах «Тип цены», «Вид покупателя» и «Вид контрагента» доступно
+виртуальное значение `Не заполнено`. Frontend передаёт эту строку как обычное
+значение соответствующего query-параметра (`price_type`, `buyer_type` или
+`counterparty_type`), а backend выбирает записи с `NULL`, пустой строкой или
+строкой только из пробелов. В базу значение `Не заполнено` не записывается.
+
 ## Структура размещения
 
 - Внешний адрес приложения: `/vr/clients/`.
@@ -240,4 +246,68 @@ delta от сохранённого cursor до `has_more=false`.
   "next_after_id": 125,
   "has_more": false
 }
+```
+
+
+## Integration API для «Журнала продаж»
+
+Базовый production URL для `CLIENTS_VR_API_URL`:
+
+```text
+https://kvasmix.ru/vr/clients/api
+```
+
+Все методы `/api/integration/*` используют единый Bearer-токен из переменной
+`CLIENTS_INTEGRATION_TOKEN`. Значение токена передаётся только в заголовке
+`Authorization` и не должно попадать в URL или логи.
+
+### Менеджеры и клиенты
+
+- `GET /api/integration/managers` — уникальные менеджеры;
+- `GET /api/integration/clients` — клиенты интеграции;
+- `GET /api/integration/clients?manager=Иванов Иван` — клиенты менеджера.
+
+Существующие совместимые методы `GET /api/managers` и
+`GET /api/clients?manager=...` сохраняют прежний формат массива строк.
+
+### Виды покупателей
+
+`GET /api/integration/buyer-types` возвращает уникальные непустые значения поля
+«Вид покупателя» из неархивных клиентов:
+
+```json
+["HoReCa", "Розница"]
+```
+
+`GET /api/integration/clients?buyer_type=HoReCa` фильтрует клиентов по точному
+значению без учёта регистра и внешних пробелов. Неизвестное значение возвращает
+пустой массив. Фильтр `buyer_type` можно комбинировать с `manager`; в этом случае
+клиент должен удовлетворять обоим условиям.
+
+```json
+[
+  {
+    "id": 123,
+    "client": "ООО Ромашка",
+    "name": "ООО Ромашка",
+    "manager": "Иванов Иван",
+    "buyer_type": "HoReCa"
+  }
+]
+```
+
+Совместимый вложенный endpoint
+`GET /api/integration/buyer-types/{buyer_type}/clients` возвращает тот же формат.
+Клиенты без заполненного вида покупателя в нефильтрованной выдаче получают
+`"buyer_type": null`.
+
+```bash
+curl \
+  -H "Authorization: Bearer $CLIENTS_INTEGRATION_TOKEN" \
+  "https://kvasmix.ru/vr/clients/api/integration/buyer-types"
+
+curl -G \
+  -H "Authorization: Bearer $CLIENTS_INTEGRATION_TOKEN" \
+  --data-urlencode "buyer_type=HoReCa" \
+  "https://kvasmix.ru/vr/clients/api/integration/clients"
 ```
