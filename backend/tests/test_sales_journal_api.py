@@ -42,6 +42,11 @@ def api() -> Generator[TestClient, None, None]:
                 Client(name="Пустой", manager=None, status=ClientStatus.active),
                 Client(name="", manager="Менеджер без клиентов", status=ClientStatus.active),
                 Client(name="   ", manager="Менеджер без клиентов", status=ClientStatus.active),
+                Client(name="NULL-поля", manager=None, price_type=None, buyer_type=None, counterparty_type=None),
+                Client(name="Пустые поля", manager=None, price_type="", buyer_type="", counterparty_type=""),
+                Client(name="Пробельные поля", manager=None, price_type="   ", buyer_type="   ", counterparty_type="   "),
+                Client(name="Заполненные поля", manager=None, price_type="Оптовая", buyer_type="Розница", counterparty_type="Юрлицо"),
+                Client(name="Комбинация", manager=None, price_type=None, buyer_type="Розница", counterparty_type="Юрлицо"),
             ]
         )
         db.commit()
@@ -169,3 +174,64 @@ def test_openapi_contains_buyer_type_contract(api: TestClient) -> None:
 
     assert "buyer_type" in {parameter["name"] for parameter in operation["parameters"]}
     assert operation["security"] == [{"HTTPBearer": []}]
+
+
+def registry_names(api: TestClient, **params: str) -> set[str]:
+    response = api.get(
+        "/api/clients",
+        params={"page": "1", "page_size": "100", **params},
+    )
+    assert response.status_code == 200
+    return {item["name"] for item in response.json()["items"]}
+
+
+def test_empty_option_is_added_to_three_dynamic_filters(api: TestClient) -> None:
+    response = api.get("/api/clients-filter-options")
+
+    assert response.status_code == 200
+    for key in ("price_types", "buyer_types", "counterparty_types"):
+        assert response.json()[key][0] == "Не заполнено"
+        assert response.json()[key].count("Не заполнено") == 1
+        assert "" not in response.json()[key]
+        assert "   " not in response.json()[key]
+
+
+@pytest.mark.parametrize(
+    "parameter",
+    ["price_type", "buyer_type", "counterparty_type"],
+)
+def test_empty_filter_matches_null_empty_and_whitespace(
+    api: TestClient,
+    parameter: str,
+) -> None:
+    names = registry_names(api, **{parameter: "Не заполнено"})
+
+    assert {"NULL-поля", "Пустые поля", "Пробельные поля"} <= names
+    assert "Заполненные поля" not in names
+
+
+def test_empty_filter_combines_with_filled_filter(api: TestClient) -> None:
+    names = registry_names(
+        api,
+        price_type="Не заполнено",
+        buyer_type="Розница",
+    )
+
+    assert {"ИП Смирнов", "Комбинация"} <= names
+    assert "Заполненные поля" not in names
+
+
+def test_empty_and_regular_values_in_one_filter_use_or(api: TestClient) -> None:
+    response = api.get(
+        "/api/clients",
+        params=[
+            ("page", "1"),
+            ("page_size", "100"),
+            ("price_type", "Не заполнено"),
+            ("price_type", "Оптовая"),
+        ],
+    )
+
+    assert response.status_code == 200
+    names = {item["name"] for item in response.json()["items"]}
+    assert {"NULL-поля", "Пустые поля", "Пробельные поля", "Заполненные поля"} <= names

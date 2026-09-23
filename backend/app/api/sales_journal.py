@@ -2,7 +2,7 @@ import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -82,33 +82,6 @@ def manager_clients_query(manager_name: str):
     )
 
 
-def buyer_type_client_names_query(buyer_type: str):
-    """Возвращает уникальные имена клиентов указанного вида покупателя."""
-    client_name = _normalized(Client.name)
-    expected = buyer_type.strip().casefold()
-
-    if expected == "нет":
-        buyer_type_condition = or_(
-            Client.buyer_type.is_(None),
-            func.length(_normalized(Client.buyer_type)) == 0,
-        )
-    else:
-        buyer_type_condition = (
-            func.lower(_normalized(Client.buyer_type)) == expected
-        )
-
-    return (
-        select(func.min(client_name))
-        .where(
-            Client.status != ClientStatus.archived,
-            *_non_empty(Client.name),
-            buyer_type_condition,
-        )
-        .group_by(func.lower(client_name))
-        .order_by(func.lower(func.min(client_name)), func.min(client_name))
-    )
-
-
 def integration_clients_query(*, manager: str | None = None, buyer_type: str | None = None):
     """Строит единый запрос клиентов; все фильтры объединяются через AND."""
     query = (
@@ -160,31 +133,6 @@ def integration_buyer_types(db: Session = Depends(get_db)) -> list[str]:
     return list(db.scalars(buyer_types_query()).all())
 
 
-@integration_router.get("/client-attributes")
-def integration_client_attributes(db: Session = Depends(get_db)) -> list[dict]:
-    """Компактный справочник для Sales Journal: клиент, менеджер и вид покупателя."""
-    rows = db.execute(
-        select(
-            Client.name,
-            Client.manager,
-            Client.buyer_type,
-        ).where(
-            Client.status != ClientStatus.archived,
-            *_non_empty(Client.name),
-        )
-    ).all()
-
-    return [
-        {
-            "client": name.strip(),
-            "manager": manager.strip() if manager else None,
-            "buyer_type": buyer_type.strip() if buyer_type else None,
-        }
-        for name, manager, buyer_type in rows
-        if name and name.strip()
-    ]
-
-
 @integration_router.get("/clients", response_model=list[IntegrationClientOut])
 def integration_clients(
     manager: str | None = Query(default=None),
@@ -199,18 +147,6 @@ def integration_clients(
         manager=selected_manager,
         buyer_type=buyer_type,
     )
-
-
-@integration_router.get(
-    "/buyer-types/{buyer_type}/client-names",
-    response_model=list[str],
-)
-def integration_client_names_by_buyer_type(
-    buyer_type: str,
-    db: Session = Depends(get_db),
-) -> list[str]:
-    """Уникальные имена клиентов выбранного вида покупателя для Sales Journal."""
-    return list(db.scalars(buyer_type_client_names_query(buyer_type)).all())
 
 
 @integration_router.get(

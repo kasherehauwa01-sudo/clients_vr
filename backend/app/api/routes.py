@@ -53,6 +53,7 @@ RETAIL_EMAIL_REPORT_EXCLUDED_NAME_PATTERN = re.compile(
     re.IGNORECASE,
 )
 EMAIL_EXCLUSION_CATEGORIES = {"unsubscribed", "problematic"}
+EMPTY_FILTER_VALUE = "Не заполнено"
 
 
 def require_settings_auth(clients_settings_session: str | None = Cookie(None)) -> None:
@@ -151,12 +152,9 @@ def apply_client_filters(
         query = query.where(or_(*manager_conditions))
     if company:
         query = query.where(Client.company == company)
-    if price_type:
-        query = query.where(Client.price_type.in_(price_type))
-    if buyer_type:
-        query = query.where(Client.buyer_type.in_(buyer_type))
-    if counterparty_type:
-        query = query.where(Client.counterparty_type.in_(counterparty_type))
+    query = apply_optional_text_filter(query, Client.price_type, price_type)
+    query = apply_optional_text_filter(query, Client.buyer_type, buyer_type)
+    query = apply_optional_text_filter(query, Client.counterparty_type, counterparty_type)
     if trade_place:
         query = query.where(Client.trade_places.any(TradePlace.place == trade_place))
     if has_email is not None:
@@ -174,6 +172,20 @@ def apply_client_filters(
     if birth_month:
         query = query.where(func.extract("month", Client.birth_date) == birth_month)
     return query
+
+
+def apply_optional_text_filter(query, column, selected_values):
+    """Применяет значения фильтра и виртуальный вариант «Не заполнено»."""
+    if not selected_values:
+        return query
+    include_empty = EMPTY_FILTER_VALUE in selected_values
+    filled_values = [value for value in selected_values if value != EMPTY_FILTER_VALUE]
+    conditions = []
+    if filled_values:
+        conditions.append(column.in_(filled_values))
+    if include_empty:
+        conditions.append(or_(column.is_(None), func.length(func.trim(column)) == 0))
+    return query.where(or_(*conditions))
 
 
 @router.get("/clients", response_model=PagedClients | list[str])
@@ -268,24 +280,29 @@ def client_filter_options(db: Session = Depends(get_db)):
         set(managers_from_db) | {"Нет менеджера"},
         key=lambda manager: (manager_rank.get(manager, len(MANAGER_ORDER)), manager.casefold()),
     )
-    price_types = db.scalars(
-        select(Client.price_type).where(Client.price_type.is_not(None), Client.price_type != "").distinct().order_by(Client.price_type)
-    ).all()
-    buyer_types = db.scalars(
-        select(Client.buyer_type).where(Client.buyer_type.is_not(None), Client.buyer_type != "").distinct().order_by(Client.buyer_type)
-    ).all()
-    counterparty_types = db.scalars(
-        select(Client.counterparty_type)
-        .where(Client.counterparty_type.is_not(None), Client.counterparty_type != "")
-        .distinct()
-        .order_by(Client.counterparty_type)
-    ).all()
+    price_types = client_text_filter_options(db, Client.price_type)
+    buyer_types = client_text_filter_options(db, Client.buyer_type)
+    counterparty_types = client_text_filter_options(db, Client.counterparty_type)
     return {
         "managers": managers,
-        "price_types": price_types,
-        "buyer_types": buyer_types,
-        "counterparty_types": counterparty_types,
+        "price_types": [EMPTY_FILTER_VALUE, *price_types],
+        "buyer_types": [EMPTY_FILTER_VALUE, *buyer_types],
+        "counterparty_types": [EMPTY_FILTER_VALUE, *counterparty_types],
     }
+
+
+def client_text_filter_options(db: Session, column) -> list[str]:
+    """Возвращает реальные непустые значения для списочного фильтра."""
+    return db.scalars(
+        select(column)
+        .where(
+            column.is_not(None),
+            func.length(func.trim(column)) > 0,
+            func.trim(column) != EMPTY_FILTER_VALUE,
+        )
+        .distinct()
+        .order_by(column)
+    ).all()
 
 
 @router.get("/clients/{client_id}", response_model=ClientDetail)
