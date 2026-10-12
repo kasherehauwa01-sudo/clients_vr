@@ -1,7 +1,9 @@
 import secrets
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.responses import Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -137,6 +139,37 @@ def load_integration_clients(
         integration_clients_query(manager=manager, buyer_type=buyer_type)
     ).all()
     return [IntegrationClientOut.model_validate(client) for client in clients]
+
+
+def client_managers_query():
+    """Read scalar columns in the same order as the legacy integration."""
+    return (
+        select(Client.id, Client.name, Client.manager, Client.status)
+        .where(Client.status != ClientStatus.archived, *_non_empty(Client.name))
+        .order_by(func.lower(_normalized(Client.name)), Client.id)
+        .execution_options(yield_per=512)
+    )
+
+
+def load_client_managers(db: Session) -> dict[str, str]:
+    result: dict[str, str] = {}
+    # PostgreSQL uses a server-side cursor; do not call all() or load Client entities.
+    with db.execute(client_managers_query()) as rows:
+        for _, name, manager, _ in rows:
+            key = " ".join((name or "").split()).casefold()
+            owner = (manager or "").strip()
+            if key and owner:
+                result[key] = owner
+    return result
+
+
+@integration_router.get("/client-managers", response_model=dict[str, str])
+def integration_client_managers(db: Session = Depends(get_db)) -> Response:
+    """Normalized client names mapped to the last nonempty manager in legacy order."""
+    mapping = load_client_managers(db)
+    # Return an already encoded response to avoid FastAPI copying the whole mapping.
+    body = json.dumps(mapping, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return Response(content=body, media_type="application/json")
 
 
 @router.get("/managers", response_model=list[str])
