@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models.entities import AuditLog, Client, Email, Import, ImportIssue, Phone, PhoneType, TradePlace
 from app.services.client_changes import payload_signature, record_change_if_needed
-from app.services.normalization import clean_multiline_text, clean_text, extract_emails, extract_phones, parse_date, repair_legacy_excel_text, split_values
+from app.services.normalization import clean_multiline_text, clean_text, extract_emails, extract_phones, normalize_phone, parse_date, repair_legacy_excel_text, split_values
 
 logger = logging.getLogger(__name__)
 import_logger = logging.getLogger("clients.import")
