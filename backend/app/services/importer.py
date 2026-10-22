@@ -366,6 +366,36 @@ def _find_client(db: Session, row: dict, sms: list[str], phones: list[str], emai
         ]
         if found:
             return found[0], len(found) > 1
+    if name and not company and not (sms or phones or emails):
+        # Без фирмы и контактов обычные ключи отсутствуют. Сопоставляем
+        # исходные реквизиты, а не одно имя: одноименные торговые точки
+        # должны оставаться разными клиентами. Дату покупки не используем:
+        # она меняется при следующей выгрузке.
+        identity = {
+            key: clean_text(row.get(key))
+            for key in (
+                "director", "contact_person", "manager", "price_type",
+                "client_source", "buyer_type", "counterparty_type",
+            )
+        }
+        identity["birth_date"] = parse_date(row.get("birth_date"))
+        identity["raw_common_phones"] = clean_multiline_text(row.get("common_phones"))
+        identity["raw_sms_phones"] = clean_multiline_text(row.get("sms_phones"))
+        places = {place for value in split_values(row.get("trade_places")) if (place := clean_text(value))}
+        candidates = db.scalars(
+            select(Client).where(
+                Client.name == name,
+                (Client.company.is_(None)) | (Client.company == ""),
+            ).order_by(Client.id)
+        ).all()
+        found = [
+            client for client in candidates
+            if not client.phones and not client.emails
+            and all(getattr(client, key) == value for key, value in identity.items())
+            and {place.place for place in client.trade_places} == places
+        ]
+        if found:
+            return found[0], len(found) > 1
     return None, False
 
 
