@@ -47,8 +47,12 @@ class SpaStaticFiles(StaticFiles):
 async def lifespan(app: FastAPI):
     scheduler_started = False
     try:
-        start_ftp_scheduler()
-        scheduler_started = True
+        import os
+        if os.environ.get("VR_FTP_IMPORT_ENABLED", "0") == "1":
+            start_ftp_scheduler()
+            scheduler_started = True
+        else:
+            logger.info("FTP scheduler disabled during migration")
     except Exception:
         # Ошибка необязательной FTP-автозагрузки не должна выключать реестр,
         # API и статический frontend целиком (nginx в таком случае отдаёт 502).
